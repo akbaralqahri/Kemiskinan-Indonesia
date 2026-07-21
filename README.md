@@ -83,6 +83,17 @@ Repository Git dimulai dari folder ini, tetapi root aplikasi deployment adalah `
 
 Panduan lengkap terdapat di [dashboard-web/docs/DEPLOYMENT.md](dashboard-web/docs/DEPLOYMENT.md).
 
+## Menghubungkan ke GitHub
+
+Buat repository kosong di GitHub, lalu jalankan dari folder `KemiskinanIndo`:
+
+```bash
+git remote add origin https://github.com/USERNAME/NAMA-REPOSITORY.git
+git push -u origin main
+```
+
+Periksa remote dengan `git remote -v`. Repository menyertakan lima PDF publikasi BPS, sehingga push pertama lebih besar daripada push dashboard biasa. Jika repository nantinya bertambah besar, pertimbangkan Git LFS atau penyimpanan sumber eksternal tanpa mengubah struktur folder lokal.
+
 ## Dokumentasi
 
 - [Arsitektur dan aliran data](docs/ARCHITECTURE.md)
