@@ -1,44 +1,96 @@
-# Peta Kemiskinan Indonesia
+# Analisis Kemiskinan Indonesia 2015-2026
 
-Dashboard web interaktif untuk mengeksplorasi kemiskinan Indonesia pada 2015-2025 dan proyeksi indikatif 2026. Aplikasi memuat tren nasional, peta koroplet provinsi, perbandingan indikator, penjelasan faktor terkait, evaluasi model, dan rentang ketidakpastian prediksi.
+Repository ini memuat seluruh siklus project data science: sumber BPS, harmonisasi panel provinsi, analisis multivariat, evaluasi model, proyeksi 2026, laporan, dan dashboard web.
 
-## Menjalankan secara lokal
+Dashboard aktif: [Peta Kemiskinan Indonesia](https://peta-kemiskinan-indonesia.pruductnumberone19.chatgpt.site/)
 
-Prasyarat: Node.js `>=22.13.0`.
+## Struktur repository
+
+```text
+KemiskinanIndo/
+|-- data/
+|   |-- raw/
+|   |   |-- poverty/             # 11 CSV kemiskinan BPS, 2015-2025
+|   |   `-- bps_publications/    # Publikasi Statistik Indonesia
+|   `-- processed/               # Panel harmonis dan hasil model berbentuk JSON
+|-- work/                        # Script ekstraksi, analisis, ekspor, dan laporan
+|-- dashboard-web/               # Aplikasi Next.js/Vinext yang dideploy
+|-- output/
+|   |-- pdf/                     # Laporan analisis
+|   `-- spreadsheets/            # Workbook dan preview hasil analisis
+|-- docs/                        # Dokumentasi arsitektur dan reproduksi
+|-- scripts/                     # Perintah bantu lintas tahap
+|-- tmp/                         # Artefak sementara; tidak masuk Git
+|-- requirements.txt
+`-- .gitignore
+```
+
+## Menjalankan dashboard
+
+Prasyarat: Node.js 22.13 atau lebih baru.
 
 ```bash
+cd dashboard-web
 npm install
 npm run dev
 ```
 
 Buka `http://localhost:3000`.
 
-## Pemeriksaan build
+Dashboard dapat langsung berjalan setelah repository di-clone karena data siap tayang sudah tersedia di `dashboard-web/app/data/dashboard-data.json`.
+
+## Mereproduksi analisis
+
+Siapkan Python virtual environment dan dependency:
 
 ```bash
-# Target Cloudflare Workers / OpenAI Sites
-npm run build
-
-# Target Vercel
-npm run build:vercel
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-## Deploy
+Jalankan tahap berikut dari root repository:
 
-Panduan lengkap tersedia di [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), termasuk:
+```bash
+python work/extract_bps_panel.py
+python work/analyze_poverty_panel.py
+python work/prepare_site_data.py
+python work/create_analysis_report.py
+```
 
-- deploy melalui dashboard atau CLI Vercel;
-- deploy ke Cloudflare Workers dengan Wrangler;
-- pengaturan root directory, custom domain, dan pemecahan masalah.
+Pada Windows, seluruh rangkaian dapat dijalankan dengan:
 
-## Struktur penting
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/reproduce.ps1
+```
 
-- `app/page.tsx`: tampilan dan interaksi dashboard;
-- `app/data/dashboard-data.json`: data siap tayang dan hasil model;
-- `public/data/indonesia-adm1-legacy.geojson`: geometri 34 provinsi historis;
-- `vercel.json`: konfigurasi build Vercel;
-- `docs/DEPLOYMENT.md`: dokumentasi deployment.
+Gunakan `-SkipExtract` bila ingin memakai `data/processed/extracted_panel.json` yang sudah tersedia.
 
-## Catatan analitis
+## Hasil utama
 
-Prediksi 2026 adalah hasil model analitis, bukan angka resmi BPS. Hubungan antarfaktor di dashboard adalah asosiasi statistik dan tidak boleh langsung dibaca sebagai sebab-akibat.
+- Kemiskinan nasional turun dari 11,22% pada Maret 2015 menjadi 8,47% pada Maret 2025.
+- Model utama memakai 32 provinsi dengan batas konsisten sepanjang 2015-2025.
+- Model terpilih adalah ensemble 50% naive lag-1 dan 50% Ridge.
+- Walk-forward validation 2022-2025 menghasilkan MAE sekitar 0,353 poin persen.
+- Proyeksi 2026 bersifat eksperimental dan bukan angka resmi BPS.
+
+## Deployment
+
+Repository Git dimulai dari folder ini, tetapi root aplikasi deployment adalah `dashboard-web`.
+
+- Vercel: set **Root Directory** ke `dashboard-web` dan gunakan `npm run build:vercel`.
+- Cloudflare Workers: set root ke `dashboard-web` dan gunakan alur Vinext/Wrangler.
+
+Panduan lengkap terdapat di [dashboard-web/docs/DEPLOYMENT.md](dashboard-web/docs/DEPLOYMENT.md).
+
+## Dokumentasi
+
+- [Arsitektur dan aliran data](docs/ARCHITECTURE.md)
+- [Katalog dataset](data/README.md)
+- [Urutan script analisis](work/README.md)
+- [Daftar keluaran](output/README.md)
+- [Panduan deployment](dashboard-web/docs/DEPLOYMENT.md)
+
+## Catatan interpretasi
+
+Korelasi dan koefisien model merupakan hubungan statistik, bukan bukti sebab-akibat. Peringkat provinsi perlu dibaca bersama ukuran populasi, kedalaman kemiskinan, ketimpangan, dan konteks wilayah.
