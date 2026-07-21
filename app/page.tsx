@@ -75,7 +75,9 @@ type CvRow = {
 type GeoFeature = {
   type: "Feature";
   properties: { shapeName?: string };
-  geometry: unknown;
+  geometry:
+    | { type: "Polygon"; coordinates: number[][][] }
+    | { type: "MultiPolygon"; coordinates: number[][][][] };
 };
 
 type GeoCollection = {
@@ -168,9 +170,39 @@ const NAV: { id: Tab; label: string; kicker: string }[] = [
   { id: "methodology", label: "Metodologi", kicker: "Mutu & sumber" },
 ];
 
+function signedRingArea(ring: number[][]) {
+  return ring.reduce((sum, point, index) => {
+    const next = ring[(index + 1) % ring.length];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0) / 2;
+}
+
+function rewindPolygonForD3(polygon: number[][][]) {
+  return polygon.map((ring, index) => {
+    const area = signedRingArea(ring);
+    const mustReverse = index === 0 ? area > 0 : area < 0;
+    return mustReverse ? [...ring].reverse() : ring;
+  });
+}
+
+function rewindGeoJsonForD3(collection: GeoCollection): GeoCollection {
+  return {
+    ...collection,
+    features: collection.features.map((feature) => ({
+      ...feature,
+      geometry: feature.geometry.type === "Polygon"
+        ? { ...feature.geometry, coordinates: rewindPolygonForD3(feature.geometry.coordinates) }
+        : { ...feature.geometry, coordinates: feature.geometry.coordinates.map(rewindPolygonForD3) },
+    })),
+  };
+}
+
 function fmt(value: number | null | undefined, digits = 2) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  return new Intl.NumberFormat("id-ID", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
+  const sign = value < 0 ? "-" : "";
+  const [integer, decimal] = Math.abs(value).toFixed(digits).split(".");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${sign}${grouped}${digits > 0 ? `,${decimal}` : ""}`;
 }
 
 function signed(value: number, digits = 2) {
@@ -236,7 +268,7 @@ function NationalTrendChart({ selectedProvince }: { selectedProvince: string }) 
   return (
     <div className="chart-wrap">
       <svg className="line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="trend-title trend-desc">
-        <title id="trend-title">Tren kemiskinan nasional dan {selectedProvince}, 2015 sampai 2025</title>
+        <title id="trend-title">{`Tren kemiskinan nasional dan ${selectedProvince}, 2015 sampai 2025`}</title>
         <desc id="trend-desc">Garis terracotta menunjukkan nasional. Garis navy menunjukkan provinsi terpilih.</desc>
         {ticks.map((tick) => (
           <g key={tick}>
@@ -249,8 +281,8 @@ function NationalTrendChart({ selectedProvince }: { selectedProvince: string }) 
         ))}
         <polyline points={points(nationalRows)} className="trend-national" />
         <polyline points={points(provinceRows)} className="trend-province" />
-        {nationalRows.map((d) => <circle key={`n-${d.year}`} cx={x(d.year)} cy={y(d.value)} r="3.5" className="point-national"><title>{d.year}: {fmt(d.value)}%</title></circle>)}
-        {provinceRows.map((d) => <circle key={`p-${d.year}`} cx={x(d.year)} cy={y(d.value)} r="3.5" className="point-province"><title>{selectedProvince} {d.year}: {fmt(d.value)}%</title></circle>)}
+        {nationalRows.map((d) => <circle key={`n-${d.year}`} cx={x(d.year)} cy={y(d.value)} r="3.5" className="point-national"><title>{`${d.year}: ${fmt(d.value)}%`}</title></circle>)}
+        {provinceRows.map((d) => <circle key={`p-${d.year}`} cx={x(d.year)} cy={y(d.value)} r="3.5" className="point-province"><title>{`${selectedProvince} ${d.year}: ${fmt(d.value)}%`}</title></circle>)}
         <text x={width - pad.right + 8} y={y(nationalRows.at(-1)?.value ?? 0) + 4} className="end-label national">Nasional</text>
         <text x={width - pad.right + 8} y={y(provinceRows.at(-1)?.value ?? 0) + 4} className="end-label province">{selectedProvince}</text>
       </svg>
@@ -270,7 +302,7 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
   useEffect(() => {
     fetch("/data/indonesia-adm1-legacy.geojson")
       .then((response) => response.json())
-      .then((payload: GeoCollection) => setGeo(payload))
+      .then((payload: GeoCollection) => setGeo(rewindGeoJsonForD3(payload)))
       .catch(() => setGeo(null));
   }, []);
 
@@ -294,7 +326,7 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
       {!geo && <div className="map-loading">Memuat batas wilayah…</div>}
       {geo && (
         <svg viewBox="0 0 900 440" role="img" aria-labelledby="map-title map-desc" className="map-svg">
-          <title id="map-title">Peta {METRICS[metric].label} menurut provinsi, {year}</title>
+          <title id="map-title">{`Peta ${METRICS[metric].label} menurut provinsi, ${year}`}</title>
           <desc id="map-desc">Semakin terracotta warnanya, semakin tinggi nilainya. Peta memakai geometri 34 provinsi historis.</desc>
           {paths.map(({ feature, d }) => {
             const englishName = feature.properties.shapeName ?? "";
@@ -309,7 +341,7 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
                 fill={fillFor(province)}
                 onClick={() => !uncertainPapua && rowByProvince.has(province) && onSelect(province)}
               >
-                <title>{province}: {uncertainPapua ? "lihat tabel pemekaran" : `${fmt(value as number, METRICS[metric].decimals)} ${METRICS[metric].unit}`}</title>
+                <title>{`${province}: ${uncertainPapua ? "lihat tabel pemekaran" : `${fmt(value as number, METRICS[metric].decimals)} ${METRICS[metric].unit}`}`}</title>
               </path>
             );
           })}
@@ -362,7 +394,7 @@ function ScatterPlot({ year, driver, selectedProvince, onSelect }: { year: numbe
   return (
     <div className="chart-wrap scatter-wrap">
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="scatter-title scatter-desc" className="scatter-chart">
-        <title id="scatter-title">Hubungan {driverLabel} dan kemiskinan pada {year}</title>
+        <title id="scatter-title">{`Hubungan ${driverLabel} dan kemiskinan pada ${year}`}</title>
         <desc id="scatter-desc">Setiap titik adalah satu provinsi. Titik yang dipilih diberi lingkar luar.</desc>
         {yTicks.map((tick) => <g key={`y-${tick}`}><line x1={pad.left} x2={width - pad.right} y1={y(tick)} y2={y(tick)} className="grid-line" /><text x={pad.left - 10} y={y(tick) + 4} textAnchor="end" className="axis-label">{fmt(tick, 1)}%</text></g>)}
         {xTicks.map((tick) => <g key={`x-${tick}`}><line y1={pad.top} y2={height - pad.bottom} x1={x(tick)} x2={x(tick)} className="grid-line" /><text x={x(tick)} y={height - 18} textAnchor="middle" className="axis-label">{fmt(tick, driver === "pdrb_pc_adhk2010_thousand_rp" ? 0 : 1)}</text></g>)}
@@ -375,7 +407,7 @@ function ScatterPlot({ year, driver, selectedProvince, onSelect }: { year: numbe
             className={`scatter-point ${row.province === selectedProvince ? "selected" : ""}`}
             onClick={() => onSelect(row.province)}
           >
-            <title>{row.province}: {driverLabel} {fmt(row[driver] as number)}; P0 {fmt(row.poverty_rate_pct)}%</title>
+            <title>{`${row.province}: ${driverLabel} ${fmt(row[driver] as number)}; P0 ${fmt(row.poverty_rate_pct)}%`}</title>
           </circle>
         ))}
         <text x={(pad.left + width - pad.right) / 2} y={height - 2} textAnchor="middle" className="axis-title">{driverLabel}</text>
@@ -440,7 +472,7 @@ function CvScatter() {
       <desc id="cv-desc">Titik yang mendekati garis diagonal menunjukkan prediksi yang lebih akurat.</desc>
       <line x1={x(0)} y1={y(0)} x2={x(maxValue)} y2={y(maxValue)} className="identity-line" />
       {[0, 5, 10, 15, 20].filter((tick) => tick <= maxValue).map((tick) => <g key={tick}><line x1={x(tick)} x2={x(tick)} y1={pad} y2={height - pad} className="grid-line" /><line x1={pad} x2={width - pad} y1={y(tick)} y2={y(tick)} className="grid-line" /><text x={x(tick)} y={height - 14} textAnchor="middle" className="axis-label">{tick}</text><text x={pad - 10} y={y(tick) + 4} textAnchor="end" className="axis-label">{tick}</text></g>)}
-      {rows.map((row, index) => <circle key={`${row.province}-${row.test_year}-${index}`} cx={x(row.actual_poverty_rate_pct)} cy={y(row.predicted_poverty_rate_pct)} r="3.5" className={`cv-point year-${row.test_year}`}><title>{row.province} {row.test_year}: aktual {fmt(row.actual_poverty_rate_pct)}%, prediksi {fmt(row.predicted_poverty_rate_pct)}%</title></circle>)}
+      {rows.map((row, index) => <circle key={`${row.province}-${row.test_year}-${index}`} cx={x(row.actual_poverty_rate_pct)} cy={y(row.predicted_poverty_rate_pct)} r="3.5" className={`cv-point year-${row.test_year}`}><title>{`${row.province} ${row.test_year}: aktual ${fmt(row.actual_poverty_rate_pct)}%, prediksi ${fmt(row.predicted_poverty_rate_pct)}%`}</title></circle>)}
       <text x={width / 2} y={height - 1} textAnchor="middle" className="axis-title">Aktual (%)</text>
       <text transform={`translate(12 ${height / 2}) rotate(-90)`} textAnchor="middle" className="axis-title">Prediksi (%)</text>
     </svg>
