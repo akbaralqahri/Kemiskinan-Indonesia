@@ -52,10 +52,34 @@ def polygon_parts(geometry: dict) -> list:
         raise ValueError(f"Tipe geometri tidak didukung: {geometry['type']}")
     # ArcGIS dapat menyertakan ordinat Z. D3 dan analisis centroid hanya
     # memerlukan bujur-lintang; membuang Z juga memperkecil aset deployment.
-    return [
+    cleaned = [
         [[[float(point[0]), float(point[1])] for point in ring] for ring in polygon]
         for polygon in polygons
     ]
+    valid = []
+    for polygon in cleaned:
+        if not polygon:
+            continue
+        # Layer BIG berisi fragmen batas per lembar/segmen. Setelah
+        # penyederhanaan, ring tambahan kadang tidak lagi berada di dalam ring
+        # utama dan tidak valid sebagai hole GeoJSON. Untuk peta dashboard,
+        # pertahankan outer ring setiap fragmen dan abaikan hole kecil.
+        ring = polygon[0]
+        if len(ring) < 4:
+            continue
+        unique_points = {(point[0], point[1]) for point in ring}
+        signed_area = sum(
+            ring[index][0] * ring[(index + 1) % len(ring)][1]
+            - ring[(index + 1) % len(ring)][0] * ring[index][1]
+            for index in range(len(ring))
+        ) / 2.0
+        # Penyederhanaan ArcGIS dapat meruntuhkan pulau sangat kecil menjadi
+        # garis/titik. Ring nol-area dibaca D3 sebagai komplemen bumi dan
+        # menghasilkan kotak besar, sehingga harus dibuang.
+        if len(unique_points) < 3 or abs(signed_area) < 1e-10:
+            continue
+        valid.append([ring])
+    return valid
 
 
 ids_payload = request_json({"where": "1=1", "returnIdsOnly": "true", "f": "json"})

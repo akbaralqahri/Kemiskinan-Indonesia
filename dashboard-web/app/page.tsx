@@ -615,24 +615,31 @@ function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelec
 
   return (
     <>
-      <section className="page-intro">
+      <section className="page-intro overview-intro">
         <div>
           <p className="eyebrow">Gambaran nasional dan provinsi</p>
           <h1>Jejak kemiskinan, dibaca lintas waktu.</h1>
           <p className="lead">Bandingkan tingkat kemiskinan dengan pasar kerja, pembangunan manusia, kapasitas ekonomi, dan layanan dasar tanpa mencampur batas waktu pengukuran.</p>
         </div>
-        <div className="control-panel" aria-label="Filter ringkasan">
-          <label>Tahun
+      </section>
+
+      <section className="filter-toolbar" aria-label="Filter ringkasan">
+        <div className="filter-heading">
+          <span className="filter-icon">⌁</span>
+          <div><b>Atur tampilan</b><small>Semua visual di bawah mengikuti pilihan ini</small></div>
+        </div>
+        <div className="filter-fields">
+          <label><span>Tahun data</span>
             <select value={year} onChange={(event) => setYear(Number(event.target.value))}>
               {Array.from({ length: 11 }, (_, index) => 2015 + index).map((value) => <option key={value}>{value}</option>)}
             </select>
           </label>
-          <label>Indikator
+          <label><span>Indikator utama</span>
             <select value={metric} onChange={(event) => setMetric(event.target.value as MetricCode)}>
               {Object.entries(METRICS).map(([code, item]) => <option key={code} value={code}>{item.label}</option>)}
             </select>
           </label>
-          <label>Provinsi pembanding
+          <label><span>Provinsi pembanding</span>
             <select value={selectedProvince} onChange={(event) => setSelectedProvince(event.target.value)}>
               {[...new Set(DATA.panel.map((row) => row.province))].sort().map((province) => <option key={province}>{province}</option>)}
             </select>
