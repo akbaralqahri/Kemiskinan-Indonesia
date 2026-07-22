@@ -4,7 +4,7 @@ Folder ini menyimpan hasil akhir yang layak dibagikan. File sementara, log, dan 
 
 ## PDF
 
-`pdf/laporan_analisis_kemiskinan_indonesia_2015_2026.pdf` adalah laporan 14 halaman yang menjelaskan tren, kesenjangan spasial, faktor terkait, model, validasi, dan proyeksi.
+`pdf/laporan_analisis_kemiskinan_indonesia_2015_2026.pdf` adalah laporan 19 halaman yang menjelaskan masalah, pertanyaan penelitian, tren, konvergensi, kesenjangan spasial, faktor terkait, validasi, diagnostik wilayah, proyeksi, kesimpulan, dan rekomendasi.
 
 ## Spreadsheet
 

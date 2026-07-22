@@ -27,6 +27,8 @@ dashboard-data.json          output/pdf/*.pdf
 dashboard-web -> Vercel / Cloudflare Workers / Sites
 ```
 
+Sumber geometri berjalan paralel: layer provinsi BIG diproses oleh `work/fetch_current_province_geojson.py` menjadi GeoJSON 38 provinsi. File ini dipakai pada peta 2024-2025 dan analisis spasial 2025.
+
 ## Prinsip desain
 
 1. **Raw immutable**: sumber asli tidak dimodifikasi oleh pipeline.
@@ -38,8 +40,10 @@ dashboard-web -> Vercel / Cloudflare Workers / Sites
 
 ## Cakupan model
 
-Model memakai 32 provinsi dengan batas konsisten pada 2015-2025. Peta menggunakan 34 batas historis. Wilayah Papua setelah pemekaran ditampilkan pada tabel/peringkat, tetapi tidak disalin ke geometri lama.
+Model memakai 32 provinsi dengan batas konsisten pada 2015-2025. Peta memilih geometri berdasarkan tahun: 34 batas historis untuk 2015-2023 dan 38 batas BIG untuk 2024-2025. Pemisahan ini mencegah perubahan geometri terbaca sebagai perubahan statistik.
 
 ## Forecast
 
 Model rekomendasi adalah ensemble antara naive lag-1 dan Ridge dengan penggerak sosial-ekonomi. Interval 80% dibangun dari residual out-of-sample. Hasil 2026 adalah eksperimen analitis, bukan publikasi resmi BPS.
+
+Output analisis juga menyimpan konvergensi, Global Moran's I eksploratif, error validasi per provinsi, selisih antarmodel, serta kelas prioritas pemantauan. JSON dan PDF final disalin ke `dashboard-web/public/downloads` agar tersedia setelah deployment.

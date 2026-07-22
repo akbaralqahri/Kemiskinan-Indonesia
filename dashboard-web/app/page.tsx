@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { geoMercator, geoPath } from "d3-geo";
 import dashboardData from "./data/dashboard-data.json";
 
-type Tab = "overview" | "drivers" | "forecast" | "methodology";
+type Tab = "overview" | "findings" | "drivers" | "forecast" | "methodology";
 type MetricCode =
   | "poverty_rate_pct"
   | "poor_population_thousand"
@@ -50,6 +50,12 @@ type ForecastRow = {
   input_pdrb_vintage_status: string;
   forecast_status: string;
   forecast_rank_high_to_low: number;
+  interval_width_80_pp: number;
+  model_spread_pp: number;
+  uncertainty_signal: string;
+  risk_tier: string;
+  trajectory: string;
+  monitoring_priority: string;
 };
 
 type BenchmarkRow = {
@@ -74,7 +80,7 @@ type CvRow = {
 
 type GeoFeature = {
   type: "Feature";
-  properties: { shapeName?: string };
+  properties: { shapeName?: string; province?: string; wadmpr?: string };
   geometry:
     | { type: "Polygon"; coordinates: number[][][] }
     | { type: "MultiPolygon"; coordinates: number[][][][] };
@@ -92,6 +98,16 @@ const DATA = dashboardData as unknown as {
   forecast: ForecastRow[];
   benchmark: BenchmarkRow[];
   cv_predictions: CvRow[];
+  province_diagnostics: {
+    province: string;
+    n_test_years: number;
+    mae_pp: number;
+    rmse_pp: number;
+    bias_actual_minus_pred_pp: number;
+    maximum_absolute_error_pp: number;
+    worst_test_year: number;
+    mae_rank_high_to_low: number;
+  }[];
   correlations: {
     feature_code: string;
     feature_name: string;
@@ -106,6 +122,48 @@ const DATA = dashboardData as unknown as {
     absolute_coefficient: number;
     coefficient_sign: string;
   }[];
+  trend_distribution: {
+    year: number;
+    province_n: number;
+    unweighted_mean_pct: number;
+    median_pct: number;
+    minimum_pct: number;
+    maximum_pct: number;
+    std_dev_pct: number;
+  }[];
+  convergence: {
+    std_dev_2015_pct: number;
+    std_dev_2025_pct: number;
+    std_dev_change_pct: number;
+    beta_slope_change_on_initial: number;
+    initial_level_change_correlation: number;
+    interpretation: string;
+  };
+  forecast_summary: {
+    province_n: number;
+    unweighted_average_2025_pct: number;
+    unweighted_average_forecast_2026_pct: number;
+    average_change_pp: number;
+    median_model_spread_pp: number;
+    high_or_very_high_n: number;
+    increasing_n: number;
+    decreasing_n: number;
+  };
+  spatial_analysis: {
+    status: string;
+    moran_i?: number;
+    pseudo_p_value_two_sided?: number;
+    method?: string;
+    interpretation?: string;
+  };
+  universe_summary: {
+    code: string;
+    province_n: number;
+    period: string;
+    purpose: string;
+    reason: string;
+  }[];
+  key_findings: { code: string; title: string; statement: string }[];
   data_legend: {
     symbol: string;
     displayed_meaning: string;
@@ -165,6 +223,7 @@ const GEO_NAME_MAP: Record<string, string> = {
 
 const NAV: { id: Tab; label: string; kicker: string }[] = [
   { id: "overview", label: "Ringkasan", kicker: "Tren & wilayah" },
+  { id: "findings", label: "Temuan", kicker: "Jawaban analisis" },
   { id: "drivers", label: "Faktor terkait", kicker: "Eksplorasi hubungan" },
   { id: "forecast", label: "Prediksi 2026", kicker: "Model & interval" },
   { id: "methodology", label: "Metodologi", kicker: "Mutu & sumber" },
@@ -300,11 +359,16 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
   const colors = ["#dce5de", "#b9c9bd", "#91aa99", "#c99070", "#b55e3f"];
 
   useEffect(() => {
-    fetch("/data/indonesia-adm1-legacy.geojson")
+    const mapSource = year >= 2024
+      ? "/data/indonesia-adm1-current.geojson"
+      : "/data/indonesia-adm1-legacy.geojson";
+    let active = true;
+    fetch(mapSource)
       .then((response) => response.json())
-      .then((payload: GeoCollection) => setGeo(rewindGeoJsonForD3(payload)))
-      .catch(() => setGeo(null));
-  }, []);
+      .then((payload: GeoCollection) => active && setGeo(rewindGeoJsonForD3(payload)))
+      .catch(() => active && setGeo(null));
+    return () => { active = false; };
+  }, [year]);
 
   const paths = useMemo(() => {
     if (!geo) return [];
@@ -314,7 +378,6 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
   }, [geo]);
 
   const fillFor = (province: string) => {
-    if (year >= 2023 && (province === "Papua" || province === "Papua Barat")) return "#e8e1d4";
     const value = rowByProvince.get(province)?.[metric];
     if (typeof value !== "number") return "#e8e1d4";
     const ratio = (value - low) / (high - low || 1);
@@ -327,21 +390,20 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
       {geo && (
         <svg viewBox="0 0 900 440" role="img" aria-labelledby="map-title map-desc" className="map-svg">
           <title id="map-title">{`Peta ${METRICS[metric].label} menurut provinsi, ${year}`}</title>
-          <desc id="map-desc">Semakin terracotta warnanya, semakin tinggi nilainya. Peta memakai geometri 34 provinsi historis.</desc>
+          <desc id="map-desc">Semakin terracotta warnanya, semakin tinggi nilainya. Geometri mengikuti konfigurasi provinsi pada tahun data.</desc>
           {paths.map(({ feature, d }) => {
-            const englishName = feature.properties.shapeName ?? "";
-            const province = GEO_NAME_MAP[englishName] ?? englishName;
+            const rawName = feature.properties.province ?? feature.properties.shapeName ?? feature.properties.wadmpr ?? "";
+            const province = GEO_NAME_MAP[rawName] ?? rawName;
             const value = rowByProvince.get(province)?.[metric];
-            const uncertainPapua = year >= 2023 && (province === "Papua" || province === "Papua Barat");
             return (
               <path
-                key={englishName}
+                key={province}
                 d={d}
                 className={`province-shape ${province === selectedProvince ? "selected" : ""}`}
                 fill={fillFor(province)}
-                onClick={() => !uncertainPapua && rowByProvince.has(province) && onSelect(province)}
+                onClick={() => rowByProvince.has(province) && onSelect(province)}
               >
-                <title>{`${province}: ${uncertainPapua ? "lihat tabel pemekaran" : `${fmt(value as number, METRICS[metric].decimals)} ${METRICS[metric].unit}`}`}</title>
+                <title>{`${province}: ${typeof value === "number" ? `${fmt(value, METRICS[metric].decimals)} ${METRICS[metric].unit}` : "data tidak tersedia"}`}</title>
               </path>
             );
           })}
@@ -350,7 +412,7 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
       <div className="map-legend" aria-label="Legenda warna peta">
         <span>Rendah</span>{colors.map((color) => <i key={color} style={{ background: color }} />)}<span>Tinggi</span>
       </div>
-      <p className="map-note">Batas peta: 34 provinsi historis. Enam wilayah Papua 2025 tersedia lengkap pada peringkat, tanpa dipaksakan ke geometri lama.</p>
+      <p className="map-note">{year >= 2024 ? "Batas 38 provinsi terkini dari BIG; disederhanakan untuk visualisasi." : "Batas historis 34 provinsi dari geoBoundaries, sesuai struktur data 2015–2023."}</p>
     </div>
   );
 }
@@ -479,6 +541,62 @@ function CvScatter() {
   );
 }
 
+function ForecastRiskMatrix({ selectedProvince, onSelect }: { selectedProvince: string; onSelect: (province: string) => void }) {
+  const rows = DATA.forecast;
+  const width = 720;
+  const height = 390;
+  const pad = { left: 58, right: 28, top: 24, bottom: 52 };
+  const minX = Math.floor(Math.min(...rows.map((row) => row.forecast_poverty_rate_pct)) - 1);
+  const maxX = Math.ceil(Math.max(...rows.map((row) => row.forecast_poverty_rate_pct)) + 1);
+  const minY = Math.min(-0.8, Math.floor(Math.min(...rows.map((row) => row.change_vs_2025_pp)) * 10) / 10 - 0.1);
+  const maxY = 0.3;
+  const x = (value: number) => pad.left + ((value - minX) / (maxX - minX || 1)) * (width - pad.left - pad.right);
+  const y = (value: number) => pad.top + ((maxY - value) / (maxY - minY || 1)) * (height - pad.top - pad.bottom);
+  const colors: Record<string, string> = { "Lebih rendah": "#83a08d", Menengah: "#d4aa70", Tinggi: "#c67b56", "Sangat tinggi": "#a84732" };
+  return (
+    <div className="risk-matrix-wrap">
+      <svg viewBox={`0 0 ${width} ${height}`} className="risk-matrix" role="img" aria-labelledby="risk-title risk-desc">
+        <title id="risk-title">Matriks risiko prediksi kemiskinan 2026</title>
+        <desc id="risk-desc">Sumbu horizontal menunjukkan tingkat prediksi. Sumbu vertikal menunjukkan perubahan dari 2025. Ukuran titik menunjukkan perbedaan antarmodel.</desc>
+        <rect x={x(12)} y={pad.top} width={width - pad.right - x(12)} height={height - pad.top - pad.bottom} className="risk-zone high" />
+        <rect x={x(10)} y={pad.top} width={Math.max(0, x(12) - x(10))} height={height - pad.top - pad.bottom} className="risk-zone medium" />
+        {[minX, 7, 10, 12, 15, maxX].filter((tick, index, list) => tick >= minX && tick <= maxX && list.indexOf(tick) === index).map((tick) => <g key={`risk-x-${tick}`}><line x1={x(tick)} x2={x(tick)} y1={pad.top} y2={height - pad.bottom} className="grid-line" /><text x={x(tick)} y={height - 20} textAnchor="middle" className="axis-label">{tick}%</text></g>)}
+        {[minY, -0.5, -0.25, 0, maxY].filter((tick, index, list) => tick >= minY && tick <= maxY && list.indexOf(tick) === index).map((tick) => <g key={`risk-y-${tick}`}><line x1={pad.left} x2={width - pad.right} y1={y(tick)} y2={y(tick)} className={tick === 0 ? "zero-line" : "grid-line"} /><text x={pad.left - 10} y={y(tick) + 4} textAnchor="end" className="axis-label">{signed(tick, 2)}</text></g>)}
+        {rows.map((row) => (
+          <circle
+            key={row.province}
+            cx={x(row.forecast_poverty_rate_pct)}
+            cy={y(row.change_vs_2025_pp)}
+            r={(row.province === selectedProvince ? 8 : 4.5) + Math.min(3, row.model_spread_pp)}
+            fill={colors[row.risk_tier] ?? "#61756a"}
+            className={`risk-point ${row.province === selectedProvince ? "selected" : ""}`}
+            onClick={() => onSelect(row.province)}
+          >
+            <title>{`${row.province}: prediksi ${fmt(row.forecast_poverty_rate_pct)}%, perubahan ${signed(row.change_vs_2025_pp)} pp, ${row.risk_tier}`}</title>
+          </circle>
+        ))}
+        <text x={(pad.left + width - pad.right) / 2} y={height - 1} textAnchor="middle" className="axis-title">Prediksi kemiskinan 2026 (%) →</text>
+        <text transform={`translate(14 ${(pad.top + height - pad.bottom) / 2}) rotate(-90)`} textAnchor="middle" className="axis-title">Perubahan dari 2025 (pp)</text>
+      </svg>
+      <div className="risk-legend">{Object.entries(colors).map(([label, color]) => <span key={label}><i style={{ background: color }} />{label}</span>)}</div>
+    </div>
+  );
+}
+
+function ProvinceDiagnostics({ selectedProvince, onSelect }: { selectedProvince: string; onSelect: (province: string) => void }) {
+  const selected = DATA.province_diagnostics.find((row) => row.province === selectedProvince);
+  const rows = DATA.province_diagnostics.slice(0, 10);
+  return (
+    <div>
+      {selected && <div className="diagnostic-highlight"><span>Error {selectedProvince}</span><b>MAE {fmt(selected.mae_pp, 3)} pp</b><small>Bias aktual−prediksi {signed(selected.bias_actual_minus_pred_pp, 3)} pp · error maksimum {fmt(selected.maximum_absolute_error_pp, 3)} pp ({selected.worst_test_year})</small></div>}
+      <div className="diagnostic-table">
+        <div className="diagnostic-head"><span>Provinsi</span><span>MAE</span><span>Bias</span><span>Tahun terberat</span></div>
+        {rows.map((row) => <button key={row.province} className={row.province === selectedProvince ? "active" : ""} onClick={() => onSelect(row.province)}><span><b>{String(row.mae_rank_high_to_low).padStart(2, "0")}</b>{row.province}</span><span>{fmt(row.mae_pp, 3)}</span><span>{signed(row.bias_actual_minus_pred_pp, 3)}</span><span>{row.worst_test_year}</span></button>)}
+      </div>
+    </div>
+  );
+}
+
 function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelectedProvince }: { year: number; setYear: (value: number) => void; metric: MetricCode; setMetric: (value: MetricCode) => void; selectedProvince: string; setSelectedProvince: (value: string) => void }) {
   const yearRows = DATA.panel.filter((row) => row.year === year);
   const metricRows = yearRows.filter((row) => typeof row[metric] === "number");
@@ -522,10 +640,21 @@ function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelec
         </div>
       </section>
 
+      <section className="scope-ribbon" aria-label="Cakupan wilayah analisis">
+        {DATA.universe_summary.map((item) => (
+          <article key={item.code} className={item.code === (year >= 2024 ? "current38" : "historic34") ? "active" : ""}>
+            <b>{item.province_n}</b>
+            <span>{item.purpose}</span>
+            <small>{item.period}</small>
+          </article>
+        ))}
+        <p><b>Mengapa berbeda?</b> Peta mengikuti wilayah pada tahun observasi; model memakai 32 unit yang benar-benar konsisten agar pemekaran tidak terbaca sebagai perubahan kemiskinan.</p>
+      </section>
+
       <section className="stat-grid" aria-label="Indikator utama">
         <StatCard eyebrow={metric === "poverty_rate_pct" || metric === "poor_population_thousand" ? "Indonesia" : "Rerata 32 provinsi stabil"} value={fmt(overviewValue, definition.decimals)} unit={definition.unit} note={<>{definition.short} pada {year}{metric === "poverty_rate_pct" && previousNational && national ? <> · <MiniArrow value={national.poverty_rate_pct - previousNational.poverty_rate_pct} /></> : null}</>} tone="accent" />
-        <StatCard eyebrow="Nilai tertinggi" value={fmt(highest?.[metric] as number, definition.decimals)} unit={definition.unit} note={highest?.province ?? "—"} />
-        <StatCard eyebrow="Nilai terendah" value={fmt(lowest?.[metric] as number, definition.decimals)} unit={definition.unit} note={lowest?.province ?? "—"} />
+        <StatCard eyebrow={`Nilai tertinggi · ${metricRows.length} provinsi`} value={fmt(highest?.[metric] as number, definition.decimals)} unit={definition.unit} note={highest?.province ?? "—"} />
+        <StatCard eyebrow={`Nilai terendah · ${metricRows.length} provinsi`} value={fmt(lowest?.[metric] as number, definition.decimals)} unit={definition.unit} note={lowest?.province ?? "—"} />
         <StatCard eyebrow={selectedProvince} value={fmt(selected?.[metric] as number, definition.decimals)} unit={definition.unit} note={latestYear && selected?.poverty_rate_pct !== null ? <>P0 2025 · {fmt(selected?.poverty_rate_pct)}%</> : <>Data terpilih · {year}</>} tone="dark" />
       </section>
 
@@ -551,8 +680,76 @@ function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelec
           <h2>Kemiskinan nasional turun, tetapi jarak antarprovinsi masih lebar.</h2>
           <p>P0 Indonesia turun dari 11,22% pada 2015 menjadi 8,47% pada 2025. Pada 2025, rentang provinsi masih berada antara 3,72% dan 18,60%.</p>
           <div className="note-rule" />
+          {DATA.spatial_analysis.status === "computed" && <p><b>Autokorelasi spasial:</b> Moran&apos;s I {fmt(DATA.spatial_analysis.moran_i, 3)} (p {fmt(DATA.spatial_analysis.pseudo_p_value_two_sided, 3)}). Kemiskinan tinggi dan rendah tidak tersebar acak secara geografis.</p>}
           <p className="small-muted">Garis nasional menggunakan agregat resmi BPS; statistik antarprovinsi adalah perbandingan deskriptif dan tidak berbobot penduduk.</p>
         </aside>
+      </section>
+    </>
+  );
+}
+
+function Findings() {
+  const stdReduction = 1 - DATA.convergence.std_dev_2025_pct / DATA.convergence.std_dev_2015_pct;
+  const questions = [
+    "Bagaimana kemiskinan Indonesia berubah sejak 2015, termasuk saat pandemi?",
+    "Wilayah mana yang tertinggal dan apakah kemiskinan membentuk pola spasial?",
+    "Faktor sosial-ekonomi apa yang paling konsisten bergerak bersama kemiskinan?",
+    "Apakah model multivariat mengungguli prediksi sederhana untuk 2026?",
+  ];
+  return (
+    <>
+      <section className="findings-hero">
+        <div>
+          <p className="eyebrow light">Masalah yang dijawab</p>
+          <h1>Penurunan nasional belum berarti ketimpangan wilayah selesai.</h1>
+          <p>Project ini mencari pola yang dapat membantu menentukan wilayah pemantauan, memahami faktor terkait, dan menilai apakah prediksi satu tahun ke depan cukup andal untuk menjadi sinyal dini.</p>
+        </div>
+        <div className="download-stack">
+          <a href={String(DATA.meta.report_download)} download>Unduh laporan PDF <span>↓</span></a>
+          <a href={String(DATA.meta.data_download)} download>Unduh data dashboard <span>↓</span></a>
+        </div>
+      </section>
+
+      <section className="research-questions">
+        <p className="eyebrow">Empat pertanyaan penelitian</p>
+        <div>{questions.map((question, index) => <article key={question}><span>0{index + 1}</span><p>{question}</p></article>)}</div>
+      </section>
+
+      <section className="findings-list">
+        <div className="section-heading"><p className="eyebrow">Temuan utama</p><h2>Lima jawaban berbasis data</h2></div>
+        {DATA.key_findings.map((finding, index) => (
+          <article key={finding.code}>
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <div><h3>{finding.title}</h3><p>{finding.statement}</p></div>
+          </article>
+        ))}
+      </section>
+
+      <section className="dashboard-grid convergence-grid">
+        <article className="panel convergence-card">
+          <div className="panel-heading"><div><p className="eyebrow">Konvergensi deskriptif</p><h2>Dispersi antarprovinsi menyempit</h2></div><span className="year-chip">2015–2025</span></div>
+          <div className="convergence-numbers">
+            <div><small>Standar deviasi 2015</small><b>{fmt(DATA.convergence.std_dev_2015_pct, 2)} pp</b></div>
+            <i>→</i>
+            <div><small>Standar deviasi 2025</small><b>{fmt(DATA.convergence.std_dev_2025_pct, 2)} pp</b></div>
+            <div className="convergence-change"><small>Penyempitan</small><b>{fmt(stdReduction * 100, 1)}%</b></div>
+          </div>
+          <p>{DATA.convergence.interpretation}</p>
+        </article>
+        <article className="conclusion-card">
+          <p className="eyebrow light">Kesimpulan</p>
+          <h2>Kemajuan nyata, tetapi berkelompok secara spasial dan tidak merata.</h2>
+          <p>Indonesia mencapai titik kemiskinan nasional yang lebih rendah pada 2025. Namun, kantong kemiskinan tinggi tetap terkonsentrasi, layanan dasar masih berkaitan kuat dengan P0, dan prediksi harus dibaca sebagai alat pemantauan—bukan angka resmi.</p>
+        </article>
+      </section>
+
+      <section className="recommendation-panel">
+        <div><p className="eyebrow">Implikasi analitis</p><h2>Apa yang sebaiknya dilakukan berikutnya?</h2></div>
+        <ol>
+          <li><b>Prioritaskan wilayah tinggi.</b><span>Gunakan level 2025/2026, arah perubahan, dan ketidakpastian secara bersamaan.</span></li>
+          <li><b>Uji kualitas pekerjaan.</b><span>Tambahkan informalitas, upah riil, jam kerja, dan produktivitas untuk menjelaskan paradoks TPT/TPAK.</span></li>
+          <li><b>Perluas outcome.</b><span>Tambahkan P1, P2, Gini, inflasi pangan, dan perlindungan sosial sebelum membuat rekomendasi kebijakan.</span></li>
+        </ol>
       </section>
     </>
   );
@@ -619,8 +816,8 @@ function Drivers({ year, setYear, selectedProvince, setSelectedProvince }: { yea
 function Forecast({ selectedProvince, setSelectedProvince }: { selectedProvince: string; setSelectedProvince: (value: string) => void }) {
   const selected = DATA.forecast.find((row) => row.province === selectedProvince) ?? DATA.forecast[0];
   const best = DATA.benchmark[0];
-  const averageForecast = mean(DATA.forecast.map((row) => row.forecast_poverty_rate_pct));
-  const averageChange = mean(DATA.forecast.map((row) => row.change_vs_2025_pp));
+  const averageForecast = DATA.forecast_summary.unweighted_average_forecast_2026_pct;
+  const averageChange = DATA.forecast_summary.average_change_pp;
   return (
     <>
       <section className="forecast-hero">
@@ -632,7 +829,7 @@ function Forecast({ selectedProvince, setSelectedProvince }: { selectedProvince:
         <StatCard eyebrow="Rerata forecast 32 provinsi" value={fmt(averageForecast)} unit="%" note={<MiniArrow value={averageChange} />} tone="accent" />
         <StatCard eyebrow="MAE out-of-sample" value={fmt(best.mae, 3)} unit="pp" note="128 observasi uji, 2022–2025" />
         <StatCard eyebrow="R² out-of-sample" value={fmt(best.r2, 3)} note="Kecocokan prediksi terhadap aktual" />
-        <StatCard eyebrow="Status" value="Nonresmi" note="Eksperimental · dapat direvisi" tone="dark" />
+        <StatCard eyebrow="Prioritas tinggi/sangat tinggi" value={String(DATA.forecast_summary.high_or_very_high_n)} unit="provinsi" note="Berdasarkan level proyeksi, bukan probabilitas" tone="dark" />
       </section>
 
       <section className="dashboard-grid forecast-grid">
@@ -647,11 +844,24 @@ function Forecast({ selectedProvince, setSelectedProvince }: { selectedProvince:
           <p className="forecast-number">{fmt(selected.forecast_poverty_rate_pct)}<span>%</span></p>
           <div className="forecast-range"><span>Interval 80%</span><b>{fmt(selected.lower_80_pct)}–{fmt(selected.upper_80_pct)}%</b></div>
           <div className="forecast-change"><span>Dibanding 2025</span><MiniArrow value={selected.change_vs_2025_pp} /></div>
+          <div className="risk-tags"><span className={`risk-tag ${selected.risk_tier.toLowerCase().replaceAll(" ", "-")}`}>{selected.risk_tier}</span><span>{selected.trajectory}</span></div>
           <div className="forecast-divider" />
           <p className="eyebrow light">Lima sudut pandang model</p>
           <ModelComparison row={selected} />
           <p className="forecast-caution">Input PDRB 2025 berstatus sangat sementara. Kejutan harga, kebijakan, bencana, dan perubahan survei tidak tertangkap penuh.</p>
         </aside>
+      </section>
+
+      <section className="dashboard-grid risk-grid">
+        <article className="panel">
+          <div className="panel-heading"><div><p className="eyebrow">Level × arah perubahan</p><h2>Matriks risiko proyeksi</h2></div><span className="small-muted">Ukuran titik = selisih antarmodel</span></div>
+          <ForecastRiskMatrix selectedProvince={selected.province} onSelect={setSelectedProvince} />
+        </article>
+        <article className="panel diagnostics-panel">
+          <div className="panel-heading"><div><p className="eyebrow">Error per wilayah</p><h2>Di mana model paling sulit?</h2></div><span className="small-muted">Top 10 MAE</span></div>
+          <ProvinceDiagnostics selectedProvince={selected.province} onSelect={setSelectedProvince} />
+          <p className="footnote">MAE provinsi dihitung dari empat tahun uji 2022–2025. Daftar ini menunjukkan kebutuhan kehati-hatian, bukan peringkat kualitas data.</p>
+        </article>
       </section>
 
       <section className="dashboard-grid validation-grid">
@@ -669,6 +879,7 @@ function Forecast({ selectedProvince, setSelectedProvince }: { selectedProvince:
             </div>
           ))}
           <p className="footnote">Pemilihan model berdasarkan MAE terkecil pada rolling-origin. Setiap tahun uji hanya diprediksi menggunakan data yang tersedia sebelumnya.</p>
+          <div className="download-row"><a href={String(DATA.meta.report_download)} download>Laporan PDF ↓</a><a href={String(DATA.meta.data_download)} download>Data JSON ↓</a></div>
         </article>
       </section>
     </>
@@ -680,6 +891,11 @@ function Methodology() {
   return (
     <>
       <section className="page-intro compact"><div><p className="eyebrow">Transparansi analisis</p><h1>Dari tabel BPS menuju model yang dapat diaudit.</h1><p className="lead">Data mentah, status mutu, transformasi lag, validasi waktu, dan sumber dipisahkan agar setiap angka dapat ditelusuri.</p></div></section>
+
+      <section className="universe-explainer">
+        <div className="section-heading"><p className="eyebrow">Tiga semesta data</p><h2>38, 34, dan 32 semuanya benar—untuk tujuan berbeda.</h2></div>
+        <div>{DATA.universe_summary.map((item) => <article key={item.code}><span>{item.province_n}</span><h3>{item.purpose}</h3><b>{item.period}</b><p>{item.reason}</p></article>)}</div>
+      </section>
 
       <section className="method-steps">
         {[
@@ -728,7 +944,8 @@ function Methodology() {
         <div className="source-list">
           {DATA.sources.map((source, index) => <a href={source.url} target="_blank" rel="noreferrer" key={source.url}><span>{String(index + 1).padStart(2, "0")}</span>{source.label}<i>↗</i></a>)}
         </div>
-        <p className="source-note">Peta menggunakan geoBoundaries ADM1 berlisensi Open Data Commons ODbL 1.0. Tabel dan publikasi statistik berasal dari Badan Pusat Statistik.</p>
+        <p className="source-note">Peta historis memakai geoBoundaries ADM1; peta 2024–2025 memakai layer resmi BIG yang disederhanakan untuk visualisasi. Tabel dan publikasi statistik berasal dari BPS.</p>
+        <div className="download-row"><a href={String(DATA.meta.report_download)} download>Unduh laporan PDF ↓</a><a href={String(DATA.meta.data_download)} download>Unduh data dashboard ↓</a></div>
       </section>
     </>
   );
@@ -760,6 +977,7 @@ export default function Home() {
 
       <div className="site-shell" id="top">
         {activeTab === "overview" && <Overview year={year} setYear={setYear} metric={metric} setMetric={setMetric} selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} />}
+        {activeTab === "findings" && <Findings />}
         {activeTab === "drivers" && <Drivers year={year} setYear={setYear} selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} />}
         {activeTab === "forecast" && <Forecast selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} />}
         {activeTab === "methodology" && <Methodology />}
@@ -767,7 +985,7 @@ export default function Home() {
 
       <footer>
         <div><span className="brand-mark small">PI</span><p><b>Peta Kemiskinan Indonesia</b><small>Analisis eksploratif berbasis data BPS</small></p></div>
-        <p>Data 2015–2025 · Forecast 2026 nonresmi<br />Diperbarui 21 Juli 2026</p>
+        <p>Data 2015–2025 · Forecast 2026 nonresmi<br />Diperbarui 22 Juli 2026</p>
       </footer>
     </main>
   );

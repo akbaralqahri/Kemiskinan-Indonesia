@@ -1,6 +1,7 @@
 param(
     [switch]$SkipExtract,
-    [switch]$SkipPdf
+    [switch]$SkipPdf,
+    [switch]$RefreshMap
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +13,10 @@ $python = if (Test-Path (Join-Path $repoRoot ".venv\Scripts\python.exe")) {
 }
 Push-Location $repoRoot
 try {
+    $currentMap = Join-Path $repoRoot "dashboard-web\public\data\indonesia-adm1-current.geojson"
+    if ($RefreshMap -or -not (Test-Path $currentMap)) {
+        & $python "work\fetch_current_province_geojson.py"
+    }
     if (-not $SkipExtract) {
         & $python "work\extract_bps_panel.py"
     }

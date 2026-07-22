@@ -43,4 +43,10 @@ Kedua file dapat dibuat ulang menggunakan script dalam folder `work`.
 
 ## Batas wilayah
 
-Model temporal memakai 32 provinsi dengan batas stabil. Provinsi baru di Papua tetap tersedia pada data 2025 dan peringkat dashboard, tetapi tidak dipaksakan ke geometri 34 provinsi historis.
+Project memakai tiga semesta wilayah yang tidak boleh dicampur:
+
+- **38 provinsi (2024-2025):** peta dan peringkat terbaru menggunakan batas BIG;
+- **34 provinsi (2015-2023):** peta historis menggunakan geoBoundaries dengan konfigurasi lama;
+- **32 provinsi stabil:** korelasi panel, validasi, dan forecast mengecualikan Papua, Papua Barat, serta provinsi pecahannya agar unit wilayah konsisten.
+
+`dashboard-web/public/data/indonesia-adm1-current.geojson` berasal dari layer **Area Batas Wilayah Administrasi Provinsi** BIG dan disederhanakan untuk visualisasi, bukan penetapan batas hukum. File dapat diperbarui dengan `python work/fetch_current_province_geojson.py`.

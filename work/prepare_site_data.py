@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 
@@ -8,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXTRACTED = ROOT / "data" / "processed" / "extracted_panel.json"
 ANALYSIS = ROOT / "data" / "processed" / "poverty_analysis.json"
 OUTPUT = ROOT / "dashboard-web" / "app" / "data" / "dashboard-data.json"
+PUBLIC_OUTPUT = ROOT / "dashboard-web" / "public" / "downloads" / "dashboard-data.json"
 
 
 with EXTRACTED.open("r", encoding="utf-8") as handle:
@@ -78,8 +80,12 @@ sources = [
         "url": "https://www.bps.go.id/id/publication/2026/02/27/a43f03f45543dc4e9942f44c/statistik-indonesia-2026.html",
     },
     {
-        "label": "geoBoundaries Indonesia ADM1 (batas historis 34 provinsi)",
+        "label": "geoBoundaries Indonesia ADM1 (batas historis 34 provinsi, tahun referensi 2017)",
         "url": "https://www.geoboundaries.org/api/current/gbOpen/IDN/ADM1/",
+    },
+    {
+        "label": "Badan Informasi Geospasial — Area Batas Wilayah Administrasi Provinsi (38 provinsi)",
+        "url": "https://geoservices.big.go.id/rbi/rest/services/BATASWILAYAH/BATAS_WILAYAH/MapServer/12",
     },
 ]
 
@@ -88,9 +94,11 @@ payload = {
         "title": "Peta Kemiskinan Indonesia",
         "data_period": "2015–2025",
         "forecast_year": 2026,
-        "last_updated": "21 Juli 2026",
+        "last_updated": "22 Juli 2026",
         "model_universe": "32 provinsi dengan batas stabil sepanjang 2015–2025",
-        "map_note": "Peta menggunakan batas historis 34 provinsi. Wilayah Papua pascapemekaran ditampilkan lengkap pada peringkat 2025, tetapi tidak dipaksakan ke geometri historis.",
+        "map_note": "Peta 2015–2023 memakai 34 batas historis; peta 2024–2025 memakai 38 batas provinsi terkini dari BIG.",
+        "report_download": "/downloads/laporan_analisis_kemiskinan_indonesia_2015_2026.pdf",
+        "data_download": "/downloads/dashboard-data.json",
         **analysis["methodology"],
     },
     "national_trend": national_trend,
@@ -98,8 +106,16 @@ payload = {
     "forecast": analysis["forecast_2026"],
     "benchmark": overall_benchmark,
     "cv_predictions": recommended_cv,
+    "province_diagnostics": analysis["province_diagnostics"],
     "correlations": analysis["eda_correlations"],
     "coefficients": analysis["ridge_coefficients"],
+    "trend_distribution": analysis["eda_trend"],
+    "changes": analysis["eda_changes"],
+    "convergence": analysis["convergence"],
+    "forecast_summary": analysis["forecast_summary"],
+    "spatial_analysis": analysis["spatial_analysis"],
+    "universe_summary": analysis["universe_summary"],
+    "key_findings": analysis["key_findings"],
     "data_legend": analysis["data_legend"],
     "sources": sources,
 }
@@ -108,4 +124,12 @@ OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 with OUTPUT.open("w", encoding="utf-8") as handle:
     json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
-print(json.dumps({"output": str(OUTPUT), "bytes": OUTPUT.stat().st_size, "panel_rows": len(panel)}))
+PUBLIC_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+shutil.copy2(OUTPUT, PUBLIC_OUTPUT)
+
+print(json.dumps({
+    "output": str(OUTPUT),
+    "public_output": str(PUBLIC_OUTPUT),
+    "bytes": OUTPUT.stat().st_size,
+    "panel_rows": len(panel),
+}))

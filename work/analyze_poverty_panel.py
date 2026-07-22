@@ -11,6 +11,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 INPUT = ROOT / "data" / "processed" / "extracted_panel.json"
 OUTPUT = ROOT / "data" / "processed" / "poverty_analysis.json"
+CURRENT_GEOJSON = ROOT / "dashboard-web" / "public" / "data" / "indonesia-adm1-current.geojson"
 
 TARGET = "poverty_rate_pct"
 CV_YEARS = [2022, 2023, 2024, 2025]
@@ -220,6 +221,129 @@ def pdrb_vintage_status(year: int) -> str:
     }.get(int(year), "published_without_preliminary_mark")
 
 
+def polygon_centroid(geometry: dict) -> tuple[float, float]:
+    """Area-weighted planar centroid, sufficient for province-neighbour exploration."""
+    polygons = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+    weighted_x = 0.0
+    weighted_y = 0.0
+    total_weight = 0.0
+    fallback_points: list[tuple[float, float]] = []
+    for polygon in polygons:
+        if not polygon:
+            continue
+        ring = polygon[0]
+        fallback_points.extend((float(point[0]), float(point[1])) for point in ring)
+        cross_sum = 0.0
+        centroid_x = 0.0
+        centroid_y = 0.0
+        for index in range(len(ring) - 1):
+            x0, y0 = ring[index][:2]
+            x1, y1 = ring[index + 1][:2]
+            cross = x0 * y1 - x1 * y0
+            cross_sum += cross
+            centroid_x += (x0 + x1) * cross
+            centroid_y += (y0 + y1) * cross
+        if abs(cross_sum) < 1e-12:
+            continue
+        centroid_x /= 3.0 * cross_sum
+        centroid_y /= 3.0 * cross_sum
+        weight = abs(cross_sum / 2.0)
+        weighted_x += centroid_x * weight
+        weighted_y += centroid_y * weight
+        total_weight += weight
+    if total_weight > 0:
+        return weighted_x / total_weight, weighted_y / total_weight
+    if not fallback_points:
+        raise ValueError("Geometri tidak memiliki koordinat")
+    return (
+        float(np.mean([point[0] for point in fallback_points])),
+        float(np.mean([point[1] for point in fallback_points])),
+    )
+
+
+def haversine_km(first: tuple[float, float], second: tuple[float, float]) -> float:
+    lon1, lat1 = map(math.radians, first)
+    lon2, lat2 = map(math.radians, second)
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    value = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 6371.0 * 2.0 * math.asin(min(1.0, math.sqrt(value)))
+
+
+def spatial_diagnostics(panel_all: pd.DataFrame) -> dict:
+    if not CURRENT_GEOJSON.exists():
+        return {"status": "not_computed", "reason": "GeoJSON 38 provinsi belum tersedia."}
+    collection = json.loads(CURRENT_GEOJSON.read_text(encoding="utf-8"))
+    centroids = {
+        feature["properties"].get("province", feature["properties"].get("shapeName")): polygon_centroid(feature["geometry"])
+        for feature in collection["features"]
+    }
+    latest = panel_all.loc[panel_all["year"] == 2025, ["province", TARGET]].dropna()
+    latest = latest[latest["province"].isin(centroids)].sort_values("province").reset_index(drop=True)
+    names = latest["province"].tolist()
+    values = latest[TARGET].to_numpy(dtype=float)
+    if len(names) != 38:
+        return {"status": "not_computed", "reason": f"Cakupan peta-data hanya {len(names)} provinsi."}
+
+    neighbours = {name: set() for name in names}
+    for name in names:
+        distances = sorted(
+            ((haversine_km(centroids[name], centroids[other]), other) for other in names if other != name),
+            key=lambda pair: pair[0],
+        )
+        for _, other in distances[:4]:
+            neighbours[name].add(other)
+            neighbours[other].add(name)
+
+    index = {name: idx for idx, name in enumerate(names)}
+    weights = np.zeros((len(names), len(names)), dtype=float)
+    for name, linked in neighbours.items():
+        for other in linked:
+            weights[index[name], index[other]] = 1.0
+    z = values - values.mean()
+    denominator = float(np.sum(z ** 2))
+
+    def moran(stat_values: np.ndarray) -> float:
+        centered = stat_values - stat_values.mean()
+        denom = float(np.sum(centered ** 2))
+        numerator = float(np.sum(weights * np.outer(centered, centered)))
+        return (len(names) / float(weights.sum())) * numerator / denom if denom else 0.0
+
+    observed = moran(values)
+    rng = np.random.default_rng(20260722)
+    permutations = np.asarray([moran(rng.permutation(values)) for _ in range(999)])
+    expected = -1.0 / (len(names) - 1)
+    p_value = float((1 + np.sum(np.abs(permutations - expected) >= abs(observed - expected))) / 1000)
+    standardized = z / float(np.std(values, ddof=0))
+    row_sums = weights.sum(axis=1)
+    spatial_lag = np.divide(weights @ standardized, row_sums, out=np.zeros_like(standardized), where=row_sums > 0)
+    cluster_labels = []
+    for idx, name in enumerate(names):
+        high = standardized[idx] >= 0
+        lag_high = spatial_lag[idx] >= 0
+        code = "HH" if high and lag_high else "LL" if not high and not lag_high else "HL" if high else "LH"
+        cluster_labels.append({
+            "province": name,
+            "poverty_rate_2025_pct": float(values[idx]),
+            "standardized_rate": float(standardized[idx]),
+            "spatial_lag_knn4": float(spatial_lag[idx]),
+            "exploratory_quadrant": code,
+            "neighbours": sorted(neighbours[name]),
+        })
+    return {
+        "status": "computed",
+        "year": 2025,
+        "province_n": len(names),
+        "method": "Global Moran's I dengan matriks tetangga KNN-4 berbasis centroid; bobot disimetriskan.",
+        "moran_i": observed,
+        "expected_i": expected,
+        "permutation_n": 999,
+        "pseudo_p_value_two_sided": p_value,
+        "interpretation": "Nilai positif menunjukkan provinsi bernilai serupa cenderung berdekatan; analisis ini eksploratif, bukan bukti kausal.",
+        "province_quadrants": cluster_labels,
+    }
+
+
 with INPUT.open("r", encoding="utf-8") as handle:
     source = json.load(handle)
 
@@ -371,6 +495,50 @@ for row_idx, (_, row) in enumerate(forecast_2026.iterrows()):
     })
 forecast_frame = pd.DataFrame(forecast_rows).sort_values("forecast_poverty_rate_pct", ascending=False).reset_index(drop=True)
 forecast_frame["forecast_rank_high_to_low"] = np.arange(1, len(forecast_frame) + 1)
+forecast_frame["interval_width_80_pp"] = forecast_frame["upper_80_pct"] - forecast_frame["lower_80_pct"]
+model_columns = [
+    "naive_lag1_pct", "province_linear_trend_pct", "ridge_lag_drivers_pct",
+    "ridge_drivers_only_pct", "ensemble_naive_ridge_pct",
+]
+forecast_frame["model_spread_pp"] = forecast_frame[model_columns].max(axis=1) - forecast_frame[model_columns].min(axis=1)
+median_model_spread = float(forecast_frame["model_spread_pp"].median())
+forecast_frame["uncertainty_signal"] = np.where(
+    forecast_frame["model_spread_pp"] > median_model_spread,
+    "Perbedaan antarmodel di atas median",
+    "Perbedaan antarmodel lebih rendah",
+)
+forecast_frame["risk_tier"] = pd.cut(
+    forecast_frame["forecast_poverty_rate_pct"],
+    bins=[-np.inf, 7.0, 10.0, 12.0, np.inf],
+    labels=["Lebih rendah", "Menengah", "Tinggi", "Sangat tinggi"],
+).astype(str)
+forecast_frame["trajectory"] = np.select(
+    [forecast_frame["change_vs_2025_pp"] <= -0.25, forecast_frame["change_vs_2025_pp"] >= 0.10],
+    ["Menurun", "Meningkat"],
+    default="Relatif tetap",
+)
+forecast_frame["monitoring_priority"] = np.where(
+    forecast_frame["risk_tier"].isin(["Tinggi", "Sangat tinggi"]),
+    np.where(forecast_frame["trajectory"] == "Menurun", "Tinggi, namun membaik", "Tinggi dan perlu perhatian"),
+    np.where(forecast_frame["uncertainty_signal"].str.contains("atas median"), "Pantau ketidakpastian", "Pemantauan rutin"),
+)
+
+recommended_cv_frame = cv_frame[cv_frame["model_code"] == recommended_model].copy()
+diagnostic_rows = []
+for province, subset in recommended_cv_frame.groupby("province"):
+    residual = subset["residual_actual_minus_pred"].to_numpy(dtype=float)
+    worst = subset.loc[subset["absolute_error"].idxmax()]
+    diagnostic_rows.append({
+        "province": province,
+        "n_test_years": int(len(subset)),
+        "mae_pp": float(np.mean(np.abs(residual))),
+        "rmse_pp": float(np.sqrt(np.mean(residual ** 2))),
+        "bias_actual_minus_pred_pp": float(np.mean(residual)),
+        "maximum_absolute_error_pp": float(worst["absolute_error"]),
+        "worst_test_year": int(worst["test_year"]),
+    })
+province_diagnostics = pd.DataFrame(diagnostic_rows).sort_values("mae_pp", ascending=False).reset_index(drop=True)
+province_diagnostics["mae_rank_high_to_low"] = np.arange(1, len(province_diagnostics) + 1)
 
 trend_rows = []
 for year, subset in panel.groupby("year"):
@@ -401,6 +569,32 @@ for province, row in pivot_poverty.iterrows():
         "change_2024_2025_pp": safe_float(row.get(2025) - row.get(2024)),
     })
 change_frame = pd.DataFrame(change_rows).sort_values("change_2015_2025_pp")
+
+valid_change = change_frame[["poverty_rate_2015_pct", "change_2015_2025_pp"]].dropna()
+beta_slope, beta_intercept = np.polyfit(
+    valid_change["poverty_rate_2015_pct"].to_numpy(dtype=float),
+    valid_change["change_2015_2025_pp"].to_numpy(dtype=float),
+    1,
+)
+beta_correlation = float(np.corrcoef(
+    valid_change["poverty_rate_2015_pct"].to_numpy(dtype=float),
+    valid_change["change_2015_2025_pp"].to_numpy(dtype=float),
+)[0, 1])
+convergence = {
+    "province_universe": "32 provinsi stabil",
+    "start_year": 2015,
+    "end_year": 2025,
+    "std_dev_2015_pct": float(trend_frame.loc[trend_frame["year"] == 2015, "std_dev_pct"].iloc[0]),
+    "std_dev_2025_pct": float(trend_frame.loc[trend_frame["year"] == 2025, "std_dev_pct"].iloc[0]),
+    "std_dev_change_pct": float(
+        trend_frame.loc[trend_frame["year"] == 2025, "std_dev_pct"].iloc[0]
+        - trend_frame.loc[trend_frame["year"] == 2015, "std_dev_pct"].iloc[0]
+    ),
+    "beta_slope_change_on_initial": float(beta_slope),
+    "beta_intercept": float(beta_intercept),
+    "initial_level_change_correlation": beta_correlation,
+    "interpretation": "Slope negatif konsisten dengan beta-convergence deskriptif: provinsi dengan kemiskinan awal lebih tinggi cenderung mencatat penurunan lebih besar. Ini bukan estimasi kausal.",
+}
 
 corr_features = [
     "lag_poverty_rate_pct", "lag_tpt_aug_pct", "lag_tpak_aug_pct", "lag_hdi",
@@ -477,6 +671,73 @@ model_panel_export_columns = [
     "lag_food_share_pct", "year_index", "covid_2020_dummy", "lag_pdrb_vintage_status", "model_row_status",
 ]
 
+recommended_overall = overall_benchmark.loc[overall_benchmark["model_code"] == recommended_model].iloc[0]
+naive_overall = overall_benchmark.loc[overall_benchmark["model_code"] == "naive_lag1"].iloc[0]
+forecast_summary = {
+    "province_n": int(len(forecast_frame)),
+    "unweighted_average_2025_pct": float(forecast_frame["actual_2025_pct"].mean()),
+    "unweighted_average_forecast_2026_pct": float(forecast_frame["forecast_poverty_rate_pct"].mean()),
+    "average_change_pp": float(forecast_frame["change_vs_2025_pp"].mean()),
+    "median_model_spread_pp": median_model_spread,
+    "high_or_very_high_n": int(forecast_frame["risk_tier"].isin(["Tinggi", "Sangat tinggi"]).sum()),
+    "increasing_n": int((forecast_frame["trajectory"] == "Meningkat").sum()),
+    "decreasing_n": int((forecast_frame["trajectory"] == "Menurun").sum()),
+}
+universe_summary = [
+    {
+        "code": "current38",
+        "province_n": 38,
+        "period": "2024–2025",
+        "purpose": "Peta dan peringkat kondisi terbaru",
+        "reason": "Mengikuti konfigurasi 38 provinsi pada tabel BPS terbaru dan batas BIG.",
+    },
+    {
+        "code": "historic34",
+        "province_n": 34,
+        "period": "2015–2023",
+        "purpose": "Peta dan deskripsi historis sesuai tahun observasi",
+        "reason": "Empat provinsi Papua baru belum tersedia sebagai seri terpisah.",
+    },
+    {
+        "code": "stable32",
+        "province_n": 32,
+        "period": "2015–2026",
+        "purpose": "Korelasi panel, validasi model, dan forecast",
+        "reason": "Papua dan Papua Barat dikeluarkan bersama provinsi pecahannya agar unit wilayah konsisten sepanjang waktu.",
+    },
+]
+key_findings = [
+    {
+        "code": "national_decline",
+        "title": "Kemiskinan nasional menurun, tetapi guncangan pandemi terlihat jelas",
+        "statement": "P0 nasional turun dari 11,22% pada 2015 menjadi 8,47% pada 2025; kenaikan 2020–2021 memutus tren penurunan sementara.",
+    },
+    {
+        "code": "spatial_gap",
+        "title": "Kesenjangan antardaerah tetap lebar",
+        "statement": "Pada 32 provinsi stabil, Nusa Tenggara Timur mencapai 18,60% pada 2025 sementara Bali 3,72%, selisih 14,88 poin persen.",
+    },
+    {
+        "code": "basic_services",
+        "title": "Pembangunan manusia dan layanan dasar bergerak berlawanan dengan kemiskinan",
+        "statement": "Korelasi within-province P0 dengan IPM, sanitasi, dan air minum masing-masing sekitar -0,73, -0,66, dan -0,64; hubungan ini deskriptif, bukan kausal.",
+    },
+    {
+        "code": "labour_paradox",
+        "title": "Indikator pasar kerja memunculkan paradoks agregasi",
+        "statement": "TPT berkorelasi negatif secara pooled tetapi positif di dalam provinsi; kualitas, produktivitas, dan informalitas kerja layak diuji lebih lanjut.",
+    },
+    {
+        "code": "model_value",
+        "title": "Model menambah nilai dibanding baseline sederhana",
+        "statement": (
+            f"Model {MODEL_LABELS[recommended_model]} menghasilkan MAE {recommended_overall['mae']:.3f} pp, "
+            f"sekitar {(1 - recommended_overall['mae'] / naive_overall['mae']) * 100:.1f}% lebih rendah daripada naive lag-1."
+        ),
+    },
+]
+spatial_analysis = spatial_diagnostics(panel_all)
+
 output = {
     "methodology": {
         "target": "Persentase penduduk miskin provinsi pada Maret tahun t",
@@ -494,18 +755,24 @@ output = {
         "cv_observations_per_model": int(len(cv_frame[cv_frame["model_code"] == recommended_model])),
     },
     "data_legend": legend_rows,
+    "universe_summary": universe_summary,
+    "key_findings": key_findings,
     "quality_counts": clean_records(quality_frame),
     "model_panel_lag1": clean_records(model_panel[model_panel_export_columns]),
     "eda_trend": clean_records(trend_frame),
     "eda_rank_2025": clean_records(rank_2025),
     "eda_changes": clean_records(change_frame),
+    "convergence": convergence,
     "eda_correlations": clean_records(corr_frame),
     "ridge_coefficients": clean_records(coefficient_frame),
     "model_benchmark": clean_records(benchmark.sort_values(["evaluation_scope", "mae_rank", "test_year"], na_position="first")),
     "cv_predictions": clean_records(cv_frame.sort_values(["test_year", "model_code", "province"])),
+    "province_diagnostics": clean_records(province_diagnostics),
     "chosen_lambdas_by_fold": chosen_lambdas,
     "lambda_scores": clean_records(lambda_scores),
     "forecast_2026": clean_records(forecast_frame),
+    "forecast_summary": forecast_summary,
+    "spatial_analysis": spatial_analysis,
 }
 
 with OUTPUT.open("w", encoding="utf-8") as handle:

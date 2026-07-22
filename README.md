@@ -52,6 +52,7 @@ pip install -r requirements.txt
 Jalankan tahap berikut dari root repository:
 
 ```bash
+python work/fetch_current_province_geojson.py  # opsional: perbarui batas BIG
 python work/extract_bps_panel.py
 python work/analyze_poverty_panel.py
 python work/prepare_site_data.py
@@ -65,6 +66,7 @@ powershell -ExecutionPolicy Bypass -File scripts/reproduce.ps1
 ```
 
 Gunakan `-SkipExtract` bila ingin memakai `data/processed/extracted_panel.json` yang sudah tersedia.
+Gunakan `-RefreshMap` hanya ketika ingin mengambil ulang batas 38 provinsi dari layanan BIG; GeoJSON siap tayang sudah disertakan di repository.
 
 ## Hasil utama
 
@@ -72,7 +74,12 @@ Gunakan `-SkipExtract` bila ingin memakai `data/processed/extracted_panel.json` 
 - Model utama memakai 32 provinsi dengan batas konsisten sepanjang 2015-2025.
 - Model terpilih adalah ensemble 50% naive lag-1 dan 50% Ridge.
 - Walk-forward validation 2022-2025 menghasilkan MAE sekitar 0,353 poin persen.
+- MAE ensemble sekitar 19,6% lebih rendah daripada baseline naive lag-1.
+- Dispersi kemiskinan pada 32 provinsi stabil menyempit sekitar 28,6% sejak 2015.
+- Global Moran's I 2025 sebesar 0,663 (pseudo-p 0,001), menandakan pola kemiskinan mengelompok secara geografis pada definisi KNN-4.
 - Proyeksi 2026 bersifat eksperimental dan bukan angka resmi BPS.
+
+Dashboard kini memuat tab temuan, peta 38 provinsi terkini, penjelasan semesta 38/34/32, matriks risiko forecast, diagnostik error per provinsi, serta unduhan laporan PDF dan data JSON.
 
 ## Deployment
 

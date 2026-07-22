@@ -130,7 +130,9 @@ Dokumentasi resmi: [Next.js on Cloudflare Workers](https://developers.cloudflare
 - Tooltip peta muncul saat provinsi diarahkan atau dipilih.
 - Grafik tren nasional dan peringkat provinsi tampil.
 - Bagian prediksi menampilkan label **Proyeksi 2026** dan interval ketidakpastian.
-- File `/data/indonesia-adm1-legacy.geojson` mengembalikan status 200.
+- File `/data/indonesia-adm1-legacy.geojson` dan `/data/indonesia-adm1-current.geojson` mengembalikan status 200.
+- Tab **Temuan**, matriks risiko, dan diagnostik provinsi dapat dibuka.
+- Tautan `/downloads/laporan_analisis_kemiskinan_indonesia_2015_2026.pdf` dan `/downloads/dashboard-data.json` dapat diunduh.
 - Tampilan diuji pada desktop dan ponsel.
 - Judul, description, favicon, dan gambar social preview terbaca.
 
@@ -138,7 +140,7 @@ Dokumentasi resmi: [Next.js on Cloudflare Workers](https://developers.cloudflare
 
 ### Peta kosong atau berbentuk kotak
 
-- Pastikan file `public/data/indonesia-adm1-legacy.geojson` ikut terdeploy.
+- Pastikan kedua file GeoJSON dalam `public/data` ikut terdeploy.
 - Hapus cache browser atau buka deployment terbaru dalam mode privat.
 - Periksa Console dan Network browser untuk request GeoJSON yang gagal.
 - Pastikan source terbaru memuat fungsi normalisasi arah polygon sebelum geometri diberikan ke D3.
