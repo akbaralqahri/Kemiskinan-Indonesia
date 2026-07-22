@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { geoMercator, geoPath } from "d3-geo";
 import dashboardData from "./data/dashboard-data.json";
 
-type Tab = "overview" | "findings" | "drivers" | "forecast" | "methodology";
+type Tab = "overview" | "profile" | "findings" | "drivers" | "forecast" | "methodology";
+type MapMode = "level" | "change" | "forecast" | "cluster";
 type MetricCode =
   | "poverty_rate_pct"
   | "poor_population_thousand"
@@ -78,6 +79,24 @@ type CvRow = {
   absolute_error: number;
 };
 
+type ChangeRow = {
+  province: string;
+  poverty_rate_2015_pct: number;
+  poverty_rate_2024_pct: number;
+  poverty_rate_2025_pct: number;
+  change_2015_2025_pp: number;
+  change_2024_2025_pp: number;
+};
+
+type SpatialQuadrant = {
+  province: string;
+  poverty_rate_2025_pct: number;
+  standardized_rate: number;
+  spatial_lag_knn4: number;
+  exploratory_quadrant: "HH" | "HL" | "LH" | "LL";
+  neighbours: string[];
+};
+
 type GeoFeature = {
   type: "Feature";
   properties: { shapeName?: string; province?: string; wadmpr?: string };
@@ -98,6 +117,7 @@ const DATA = dashboardData as unknown as {
   forecast: ForecastRow[];
   benchmark: BenchmarkRow[];
   cv_predictions: CvRow[];
+  changes: ChangeRow[];
   province_diagnostics: {
     province: string;
     n_test_years: number;
@@ -155,6 +175,7 @@ const DATA = dashboardData as unknown as {
     pseudo_p_value_two_sided?: number;
     method?: string;
     interpretation?: string;
+    province_quadrants: SpatialQuadrant[];
   };
   universe_summary: {
     code: string;
@@ -194,6 +215,15 @@ const DRIVER_OPTIONS = [
   { code: "food_share_pct", label: "Porsi pengeluaran makanan" },
 ] as const;
 
+const ALL_PROVINCES = [...new Set(DATA.panel.map((row) => row.province))].sort();
+
+const MAP_MODES: { code: MapMode; label: string; short: string }[] = [
+  { code: "level", label: "Nilai indikator", short: "Nilai" },
+  { code: "change", label: "Perubahan kemiskinan 2015–2025", short: "Perubahan" },
+  { code: "forecast", label: "Risiko proyeksi kemiskinan 2026", short: "Risiko 2026" },
+  { code: "cluster", label: "Kuadran spasial eksploratif 2025", short: "Klaster" },
+];
+
 const GEO_NAME_MAP: Record<string, string> = {
   "West Nusa Tenggara": "Nusa Tenggara Barat",
   "East Nusa Tenggara": "Nusa Tenggara Timur",
@@ -223,6 +253,7 @@ const GEO_NAME_MAP: Record<string, string> = {
 
 const NAV: { id: Tab; label: string; kicker: string }[] = [
   { id: "overview", label: "Ringkasan", kicker: "Tren & wilayah" },
+  { id: "profile", label: "Profil wilayah", kicker: "Banding provinsi" },
   { id: "findings", label: "Temuan", kicker: "Jawaban analisis" },
   { id: "drivers", label: "Faktor terkait", kicker: "Eksplorasi hubungan" },
   { id: "forecast", label: "Prediksi 2026", kicker: "Model & interval" },
@@ -349,17 +380,32 @@ function NationalTrendChart({ selectedProvince }: { selectedProvince: string }) 
   );
 }
 
-function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: number; metric: MetricCode; selectedProvince: string; onSelect: (province: string) => void }) {
+function IndonesiaMap({ year, metric, mode, selectedProvince, onSelect }: { year: number; metric: MetricCode; mode: MapMode; selectedProvince: string; onSelect: (province: string) => void }) {
   const [geo, setGeo] = useState<GeoCollection | null>(null);
-  const rows = useMemo(() => DATA.panel.filter((row) => row.year === year), [year]);
+  const [hovered, setHovered] = useState<{ province: string; label: string; x: number; y: number } | null>(null);
+  const mapYear = mode === "level" ? year : 2025;
+  const rows = useMemo(() => DATA.panel.filter((row) => row.year === mapYear), [mapYear]);
   const rowByProvince = useMemo(() => new Map(rows.map((row) => [row.province, row])), [rows]);
-  const values = rows.map((row) => row[metric]).filter((value): value is number => typeof value === "number");
-  const low = Math.min(...values);
-  const high = Math.max(...values);
-  const colors = ["var(--map-1)", "var(--map-2)", "var(--map-3)", "var(--map-4)", "var(--map-5)"];
+  const changeByProvince = useMemo(() => new Map(DATA.changes.map((row) => [row.province, row])), []);
+  const forecastByProvince = useMemo(() => new Map(DATA.forecast.map((row) => [row.province, row])), []);
+  const clusterByProvince = useMemo(() => new Map(DATA.spatial_analysis.province_quadrants.map((row) => [row.province, row])), []);
+  const sequentialColors = ["var(--map-1)", "var(--map-2)", "var(--map-3)", "var(--map-4)", "var(--map-5)"];
+  const changeColors = ["var(--change-down-strong)", "var(--change-down)", "var(--change-flat)", "var(--change-up)", "var(--change-up-strong)"];
+  const clusterColors: Record<SpatialQuadrant["exploratory_quadrant"], string> = {
+    HH: "var(--cluster-hh)", HL: "var(--cluster-hl)", LH: "var(--cluster-lh)", LL: "var(--cluster-ll)",
+  };
+
+  const numericValues = mode === "level"
+    ? rows.map((row) => row[metric]).filter((value): value is number => typeof value === "number")
+    : mode === "change"
+      ? DATA.changes.map((row) => row.change_2015_2025_pp)
+      : DATA.forecast.map((row) => row.forecast_poverty_rate_pct);
+  const low = Math.min(...numericValues);
+  const high = Math.max(...numericValues);
+  const maxAbsChange = Math.max(...DATA.changes.map((row) => Math.abs(row.change_2015_2025_pp)), 1);
 
   useEffect(() => {
-    const mapSource = year >= 2024
+    const mapSource = mapYear >= 2024
       ? "/data/indonesia-adm1-current.geojson"
       : "/data/indonesia-adm1-legacy.geojson";
     let active = true;
@@ -368,7 +414,7 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
       .then((payload: GeoCollection) => active && setGeo(rewindGeoJsonForD3(payload)))
       .catch(() => active && setGeo(null));
     return () => { active = false; };
-  }, [year]);
+  }, [mapYear]);
 
   const paths = useMemo(() => {
     if (!geo) return [];
@@ -378,41 +424,93 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
   }, [geo]);
 
   const fillFor = (province: string) => {
-    const value = rowByProvince.get(province)?.[metric];
+    if (mode === "cluster") {
+      const quadrant = clusterByProvince.get(province)?.exploratory_quadrant;
+      return quadrant ? clusterColors[quadrant] : "var(--map-missing)";
+    }
+    const value = mode === "level"
+      ? rowByProvince.get(province)?.[metric]
+      : mode === "change"
+        ? changeByProvince.get(province)?.change_2015_2025_pp
+        : forecastByProvince.get(province)?.forecast_poverty_rate_pct;
     if (typeof value !== "number") return "var(--map-missing)";
+    if (mode === "change") {
+      const ratio = (value + maxAbsChange) / (2 * maxAbsChange);
+      return changeColors[Math.min(changeColors.length - 1, Math.max(0, Math.floor(ratio * changeColors.length)))];
+    }
     const ratio = (value - low) / (high - low || 1);
-    return colors[Math.min(colors.length - 1, Math.floor(ratio * colors.length))];
+    return sequentialColors[Math.min(sequentialColors.length - 1, Math.max(0, Math.floor(ratio * sequentialColors.length)))];
   };
 
+  const labelFor = (province: string) => {
+    if (mode === "change") {
+      const value = changeByProvince.get(province)?.change_2015_2025_pp;
+      return typeof value === "number" ? `${signed(value)} pp sejak 2015` : "seri historis tidak sebanding";
+    }
+    if (mode === "forecast") {
+      const forecast = forecastByProvince.get(province);
+      return forecast ? `${fmt(forecast.forecast_poverty_rate_pct)}% · risiko ${forecast.risk_tier.toLowerCase()}` : "di luar semesta model 32";
+    }
+    if (mode === "cluster") {
+      const cluster = clusterByProvince.get(province);
+      return cluster ? `${cluster.exploratory_quadrant} · ${cluster.neighbours.length} tetangga KNN` : "kuadran tidak tersedia";
+    }
+    const value = rowByProvince.get(province)?.[metric];
+    return typeof value === "number" ? `${fmt(value, METRICS[metric].decimals)} ${METRICS[metric].unit}` : "data tidak tersedia";
+  };
+
+  const title = mode === "level" ? `${METRICS[metric].label}, ${year}` : MAP_MODES.find((item) => item.code === mode)?.label ?? "Peta Indonesia";
+  const note = mode === "level"
+    ? (year >= 2024 ? "Batas 38 provinsi terkini dari BIG; disederhanakan untuk visualisasi." : "Batas historis 34 provinsi dari geoBoundaries, sesuai struktur data 2015–2023.")
+    : mode === "change"
+      ? "Perubahan hanya dihitung untuk 32 provinsi dengan batas stabil; nilai negatif berarti kemiskinan menurun."
+      : mode === "forecast"
+        ? "Forecast 2026 bersifat eksperimental dan hanya tersedia untuk 32 provinsi dalam semesta model."
+        : "HH = tinggi–tinggi, LL = rendah–rendah, HL/LH = outlier spasial. Kuadran KNN-4 ini eksploratif, bukan uji Local Moran signifikan.";
+
   return (
-    <div className="map-stage">
+    <div className="map-stage" onMouseLeave={() => setHovered(null)}>
       {!geo && <div className="map-loading">Memuat batas wilayah…</div>}
       {geo && (
         <svg viewBox="0 0 900 440" role="img" aria-labelledby="map-title map-desc" className="map-svg">
-          <title id="map-title">{`Peta ${METRICS[metric].label} menurut provinsi, ${year}`}</title>
-          <desc id="map-desc">Semakin terracotta warnanya, semakin tinggi nilainya. Geometri mengikuti konfigurasi provinsi pada tahun data.</desc>
+          <title id="map-title">{title}</title>
+          <desc id="map-desc">Klik provinsi untuk memilih. Arah warna dijelaskan pada legenda di bawah peta.</desc>
           {paths.map(({ feature, d }) => {
             const rawName = feature.properties.province ?? feature.properties.shapeName ?? feature.properties.wadmpr ?? "";
             const province = GEO_NAME_MAP[rawName] ?? rawName;
-            const value = rowByProvince.get(province)?.[metric];
+            const label = labelFor(province);
             return (
               <path
                 key={province}
                 d={d}
                 className={`province-shape ${province === selectedProvince ? "selected" : ""}`}
                 fill={fillFor(province)}
-                onClick={() => rowByProvince.has(province) && onSelect(province)}
+                tabIndex={0}
+                aria-label={`${province}: ${label}`}
+                onClick={() => onSelect(province)}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(province); } }}
+                onMouseMove={(event) => {
+                  const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+                  if (rect) setHovered({ province, label, x: event.clientX - rect.left + 12, y: event.clientY - rect.top + 12 });
+                }}
               >
-                <title>{`${province}: ${typeof value === "number" ? `${fmt(value, METRICS[metric].decimals)} ${METRICS[metric].unit}` : "data tidak tersedia"}`}</title>
+                <title>{`${province}: ${label}`}</title>
               </path>
             );
           })}
         </svg>
       )}
-      <div className="map-legend" aria-label="Legenda warna peta">
-        <span>Rendah</span>{colors.map((color) => <i key={color} style={{ background: color }} />)}<span>Tinggi</span>
-      </div>
-      <p className="map-note">{year >= 2024 ? "Batas 38 provinsi terkini dari BIG; disederhanakan untuk visualisasi." : "Batas historis 34 provinsi dari geoBoundaries, sesuai struktur data 2015–2023."}</p>
+      {hovered && <div className="map-tooltip" style={{ left: hovered.x, top: hovered.y }}><b>{hovered.province}</b><span>{hovered.label}</span></div>}
+      {mode === "cluster" ? (
+        <div className="map-legend cluster-legend" aria-label="Legenda kuadran spasial">
+          {(["HH", "HL", "LH", "LL"] as const).map((code) => <span key={code}><i style={{ background: clusterColors[code] }} />{code}</span>)}
+        </div>
+      ) : (
+        <div className="map-legend" aria-label="Legenda warna peta">
+          <span>{mode === "change" ? "Turun" : "Rendah"}</span>{(mode === "change" ? changeColors : sequentialColors).map((color) => <i key={color} style={{ background: color }} />)}<span>{mode === "change" ? "Naik" : "Tinggi"}</span>
+        </div>
+      )}
+      <p className="map-note">{note}</p>
     </div>
   );
 }
@@ -597,7 +695,7 @@ function ProvinceDiagnostics({ selectedProvince, onSelect }: { selectedProvince:
   );
 }
 
-function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelectedProvince }: { year: number; setYear: (value: number) => void; metric: MetricCode; setMetric: (value: MetricCode) => void; selectedProvince: string; setSelectedProvince: (value: string) => void }) {
+function Overview({ year, setYear, metric, setMetric, mapMode, setMapMode, selectedProvince, setSelectedProvince }: { year: number; setYear: (value: number) => void; metric: MetricCode; setMetric: (value: MetricCode) => void; mapMode: MapMode; setMapMode: (value: MapMode) => void; selectedProvince: string; setSelectedProvince: (value: string) => void }) {
   const yearRows = DATA.panel.filter((row) => row.year === year);
   const metricRows = yearRows.filter((row) => typeof row[metric] === "number");
   const selected = yearRows.find((row) => row.province === selectedProvince);
@@ -641,7 +739,7 @@ function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelec
           </label>
           <label><span>Provinsi pembanding</span>
             <select value={selectedProvince} onChange={(event) => setSelectedProvince(event.target.value)}>
-              {[...new Set(DATA.panel.map((row) => row.province))].sort().map((province) => <option key={province}>{province}</option>)}
+              {ALL_PROVINCES.map((province) => <option key={province}>{province}</option>)}
             </select>
           </label>
         </div>
@@ -649,7 +747,7 @@ function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelec
 
       <section className="scope-ribbon" aria-label="Cakupan wilayah analisis">
         {DATA.universe_summary.map((item) => (
-          <article key={item.code} className={item.code === (year >= 2024 ? "current38" : "historic34") ? "active" : ""}>
+          <article key={item.code} className={item.code === (mapMode !== "level" || year >= 2024 ? "current38" : "historic34") ? "active" : ""}>
             <b>{item.province_n}</b>
             <span>{item.purpose}</span>
             <small>{item.period}</small>
@@ -667,8 +765,14 @@ function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelec
 
       <section className="dashboard-grid map-grid">
         <article className="panel map-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Sebaran spasial</p><h2>{definition.label}</h2></div><span className="year-chip">{year}</span></div>
-          <IndonesiaMap year={year} metric={metric} selectedProvince={selectedProvince} onSelect={setSelectedProvince} />
+          <div className="panel-heading map-heading">
+            <div><p className="eyebrow">Eksplorasi spasial</p><h2>{mapMode === "level" ? definition.label : MAP_MODES.find((item) => item.code === mapMode)?.label}</h2></div>
+            <span className="year-chip">{mapMode === "forecast" ? 2026 : mapMode === "change" ? "15–25" : mapMode === "cluster" ? 2025 : year}</span>
+          </div>
+          <div className="map-mode-tabs" role="group" aria-label="Jenis peta">
+            {MAP_MODES.map((item) => <button key={item.code} className={mapMode === item.code ? "active" : ""} onClick={() => setMapMode(item.code)}>{item.short}</button>)}
+          </div>
+          <IndonesiaMap year={year} metric={metric} mode={mapMode} selectedProvince={selectedProvince} onSelect={setSelectedProvince} />
         </article>
         <article className="panel ranking-panel">
           <div className="panel-heading"><div><p className="eyebrow">Urutan provinsi</p><h2>Peringkat {definition.short}</h2></div><span className="small-muted">Klik untuk memilih</span></div>
@@ -690,6 +794,142 @@ function Overview({ year, setYear, metric, setMetric, selectedProvince, setSelec
           {DATA.spatial_analysis.status === "computed" && <p><b>Autokorelasi spasial:</b> Moran&apos;s I {fmt(DATA.spatial_analysis.moran_i, 3)} (p {fmt(DATA.spatial_analysis.pseudo_p_value_two_sided, 3)}). Kemiskinan tinggi dan rendah tidak tersebar acak secara geografis.</p>}
           <p className="small-muted">Garis nasional menggunakan agregat resmi BPS; statistik antarprovinsi adalah perbandingan deskriptif dan tidak berbobot penduduk.</p>
         </aside>
+      </section>
+    </>
+  );
+}
+
+function ProvinceComparisonChart({ primary, comparison }: { primary: string; comparison: string }) {
+  const width = 780;
+  const height = 310;
+  const pad = { left: 50, right: 78, top: 22, bottom: 38 };
+  const seriesFor = (province: string) => DATA.panel
+    .filter((row) => row.province === province && typeof row.poverty_rate_pct === "number")
+    .sort((a, b) => a.year - b.year)
+    .map((row) => ({ year: row.year, value: row.poverty_rate_pct as number }));
+  const primaryRows = seriesFor(primary);
+  const comparisonRows = seriesFor(comparison);
+  const values = [...primaryRows, ...comparisonRows].map((row) => row.value);
+  const minY = Math.max(0, Math.floor(Math.min(...values) - 1));
+  const maxY = Math.ceil(Math.max(...values) + 1);
+  const x = (yearValue: number) => pad.left + ((yearValue - 2015) / 10) * (width - pad.left - pad.right);
+  const y = (value: number) => pad.top + ((maxY - value) / (maxY - minY || 1)) * (height - pad.top - pad.bottom);
+  const points = (rows: { year: number; value: number }[]) => rows.map((row) => `${x(row.year)},${y(row.value)}`).join(" ");
+  const ticks = [minY, minY + (maxY - minY) / 2, maxY];
+  const lastPrimary = primaryRows.at(-1);
+  const lastComparison = comparisonRows.at(-1);
+  return (
+    <div className="chart-wrap">
+      <svg className="line-chart comparison-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="comparison-title comparison-desc">
+        <title id="comparison-title">{`Perbandingan kemiskinan ${primary} dan ${comparison}`}</title>
+        <desc id="comparison-desc">Dua garis membandingkan persentase penduduk miskin provinsi sejak 2015.</desc>
+        {ticks.map((tick) => <g key={tick}><line x1={pad.left} x2={width - pad.right} y1={y(tick)} y2={y(tick)} className="grid-line" /><text x={pad.left - 10} y={y(tick) + 4} textAnchor="end" className="axis-label">{fmt(tick, 1)}%</text></g>)}
+        {[2015, 2017, 2019, 2021, 2023, 2025].map((tick) => <text key={tick} x={x(tick)} y={height - 11} textAnchor="middle" className="axis-label">{tick}</text>)}
+        <polyline points={points(primaryRows)} className="trend-primary" />
+        <polyline points={points(comparisonRows)} className="trend-comparison" />
+        {primaryRows.map((row) => <circle key={`primary-${row.year}`} cx={x(row.year)} cy={y(row.value)} r="3.5" className="point-primary"><title>{`${primary} ${row.year}: ${fmt(row.value)}%`}</title></circle>)}
+        {comparisonRows.map((row) => <circle key={`comparison-${row.year}`} cx={x(row.year)} cy={y(row.value)} r="3.5" className="point-comparison"><title>{`${comparison} ${row.year}: ${fmt(row.value)}%`}</title></circle>)}
+        {lastPrimary && <text x={x(lastPrimary.year) + 8} y={y(lastPrimary.value) + 4} className="end-label primary">{primary}</text>}
+        {lastComparison && <text x={x(lastComparison.year) + 8} y={y(lastComparison.value) + 4} className="end-label comparison">{comparison}</text>}
+      </svg>
+    </div>
+  );
+}
+
+function findSimilarProvince(province: string) {
+  const rows = DATA.panel.filter((row) => row.year === 2025);
+  const selected = rows.find((row) => row.province === province);
+  if (!selected) return null;
+  const features: MetricCode[] = ["poverty_rate_pct", "hdi", "tpt_aug_pct", "pdrb_pc_adhk2010_thousand_rp", "sanitation_access_pct", "drinking_water_access_pct"];
+  const stats = new Map(features.map((feature) => {
+    const values = rows.map((row) => row[feature]).filter((value): value is number => typeof value === "number");
+    const average = mean(values);
+    const deviation = Math.sqrt(mean(values.map((value) => (value - average) ** 2))) || 1;
+    return [feature, { average, deviation }];
+  }));
+  return rows
+    .filter((row) => row.province !== province)
+    .map((row) => {
+      const distances = features.flatMap((feature) => {
+        const a = selected[feature];
+        const b = row[feature];
+        const stat = stats.get(feature);
+        return typeof a === "number" && typeof b === "number" && stat ? [((a - b) / stat.deviation) ** 2] : [];
+      });
+      return { province: row.province, distance: distances.length ? Math.sqrt(mean(distances)) : Number.POSITIVE_INFINITY };
+    })
+    .sort((a, b) => a.distance - b.distance)[0] ?? null;
+}
+
+function ProvinceProfile({ selectedProvince, setSelectedProvince, comparisonProvince, setComparisonProvince }: { selectedProvince: string; setSelectedProvince: (value: string) => void; comparisonProvince: string; setComparisonProvince: (value: string) => void }) {
+  const latest = DATA.panel.find((row) => row.province === selectedProvince && row.year === 2025);
+  const comparison = DATA.panel.find((row) => row.province === comparisonProvince && row.year === 2025);
+  const change = DATA.changes.find((row) => row.province === selectedProvince);
+  const forecast = DATA.forecast.find((row) => row.province === selectedProvince);
+  const diagnostic = DATA.province_diagnostics.find((row) => row.province === selectedProvince);
+  const quadrant = DATA.spatial_analysis.province_quadrants.find((row) => row.province === selectedProvince);
+  const similar = findSimilarProvince(selectedProvince);
+  const national2025 = DATA.national_trend.find((row) => row.year === 2025)?.poverty_rate_pct ?? 0;
+  const nationalGap = (latest?.poverty_rate_pct ?? national2025) - national2025;
+  const comparisonMetrics: { code: MetricCode; label: string; unit: string; digits: number }[] = [
+    { code: "poverty_rate_pct", label: "Penduduk miskin", unit: "%", digits: 2 },
+    { code: "hdi", label: "IPM", unit: "poin", digits: 2 },
+    { code: "tpt_aug_pct", label: "TPT Agustus", unit: "%", digits: 2 },
+    { code: "pdrb_pc_adhk2010_thousand_rp", label: "PDRB riil/kapita", unit: "ribu Rp", digits: 0 },
+    { code: "sanitation_access_pct", label: "Sanitasi layak", unit: "%", digits: 2 },
+    { code: "drinking_water_access_pct", label: "Air minum layak", unit: "%", digits: 2 },
+  ];
+  return (
+    <>
+      <section className="page-intro compact profile-intro">
+        <div><p className="eyebrow">Intelijen provinsi</p><h1>Satu wilayah, dibaca dalam konteks.</h1><p className="lead">Bandingkan perjalanan kemiskinan, kondisi sosial-ekonomi, kedekatan profil, sinyal spasial, dan keluaran model tanpa kehilangan batas interpretasinya.</p></div>
+        <div className="control-panel two">
+          <label>Provinsi utama<select value={selectedProvince} onChange={(event) => setSelectedProvince(event.target.value)}>{ALL_PROVINCES.map((province) => <option key={province}>{province}</option>)}</select></label>
+          <label>Provinsi pembanding<select value={comparisonProvince} onChange={(event) => setComparisonProvince(event.target.value)}>{ALL_PROVINCES.map((province) => <option key={province}>{province}</option>)}</select></label>
+        </div>
+      </section>
+
+      <section className="profile-identity">
+        <div><p className="eyebrow">Profil terpilih</p><h2>{selectedProvince}</h2><span>{latest?.island_group ?? "Wilayah Indonesia"}</span></div>
+        <p>{latest?.poverty_rate_pct !== null && latest?.poverty_rate_pct !== undefined ? <>P0 2025 berada <b>{fmt(Math.abs(nationalGap))} pp {nationalGap >= 0 ? "di atas" : "di bawah"}</b> angka nasional. </> : null}{change ? <>Sepanjang 2015–2025 berubah <b>{signed(change.change_2015_2025_pp)} pp</b>.</> : <>Seri wilayah ini belum sebanding penuh sejak 2015 karena perubahan batas administrasi.</>}</p>
+      </section>
+
+      <section className="stat-grid profile-stats">
+        <StatCard eyebrow="Kemiskinan 2025" value={fmt(latest?.poverty_rate_pct)} unit="%" note={`${signed(nationalGap)} pp terhadap Indonesia`} tone="accent" />
+        <StatCard eyebrow="Perubahan 2015–2025" value={change ? signed(change.change_2015_2025_pp) : "—"} unit={change ? "pp" : undefined} note={change ? "Batas provinsi konsisten" : "Seri historis tidak sebanding"} />
+        <StatCard eyebrow="Forecast 2026" value={fmt(forecast?.forecast_poverty_rate_pct)} unit={forecast ? "%" : undefined} note={forecast ? `${forecast.risk_tier} · interval ${fmt(forecast.lower_80_pct)}–${fmt(forecast.upper_80_pct)}%` : "Di luar semesta model 32"} />
+        <StatCard eyebrow="Profil paling mirip · 2025" value={similar?.province ?? "—"} note="Jarak terstandar enam indikator" tone="dark" />
+      </section>
+
+      <section className="dashboard-grid profile-analysis-grid">
+        <article className="panel">
+          <div className="panel-heading"><div><p className="eyebrow">Perbandingan historis</p><h2>{selectedProvince} vs {comparisonProvince}</h2></div><div className="legend-inline"><span className="primary-dot">Utama</span><span className="comparison-dot">Pembanding</span></div></div>
+          <ProvinceComparisonChart primary={selectedProvince} comparison={comparisonProvince} />
+        </article>
+        <aside className="profile-reading">
+          <p className="eyebrow light">Ringkasan intelijen</p>
+          <h2>{forecast ? forecast.monitoring_priority : "Perlu konteks wilayah baru"}</h2>
+          <dl>
+            <div><dt>Kuadran spasial</dt><dd>{quadrant?.exploratory_quadrant ?? "—"}</dd></div>
+            <div><dt>Tetangga KNN</dt><dd>{quadrant?.neighbours.join(", ") || "—"}</dd></div>
+            <div><dt>MAE wilayah</dt><dd>{diagnostic ? `${fmt(diagnostic.mae_pp, 3)} pp` : "Belum tersedia"}</dd></div>
+            <div><dt>Ketidakpastian</dt><dd>{forecast?.uncertainty_signal ?? "Belum tersedia"}</dd></div>
+          </dl>
+          <p>Kuadran spasial adalah klasifikasi eksploratif. Forecast dan kemiripan profil membantu pemantauan, tetapi tidak menyatakan hubungan sebab-akibat.</p>
+        </aside>
+      </section>
+
+      <section className="panel full-panel profile-table-panel">
+        <div className="panel-heading"><div><p className="eyebrow">Potret indikator 2025</p><h2>Perbandingan terukur</h2></div><span className="small-muted">Satuan mengikuti publikasi sumber</span></div>
+        <div className="profile-comparison-table" role="table" aria-label="Perbandingan indikator dua provinsi">
+          <div className="profile-comparison-head" role="row"><span>Indikator</span><span>{selectedProvince}</span><span>{comparisonProvince}</span><span>Selisih utama</span></div>
+          {comparisonMetrics.map((item) => {
+            const primaryValue = latest?.[item.code];
+            const comparisonValue = comparison?.[item.code];
+            const difference = typeof primaryValue === "number" && typeof comparisonValue === "number" ? primaryValue - comparisonValue : null;
+            return <div className="profile-comparison-row" role="row" key={item.code}><span>{item.label}</span><b>{fmt(primaryValue as number, item.digits)} <small>{item.unit}</small></b><b>{fmt(comparisonValue as number, item.digits)} <small>{item.unit}</small></b><span>{difference === null ? "—" : `${signed(difference, item.digits)} ${item.unit}`}</span></div>;
+          })}
+        </div>
       </section>
     </>
   );
@@ -820,8 +1060,62 @@ function Drivers({ year, setYear, selectedProvince, setSelectedProvince }: { yea
   );
 }
 
+const SCENARIO_FACTORS = [
+  { code: "lag_hdi", label: "IPM", hint: "kenaikan kualitas pembangunan manusia" },
+  { code: "lag_tpt_aug_pct", label: "TPT", hint: "perubahan pengangguran terbuka" },
+  { code: "lag_pdrb_growth_pct", label: "Pertumbuhan PDRB", hint: "perubahan momentum ekonomi" },
+  { code: "lag_sanitation_access_pct", label: "Sanitasi layak", hint: "perubahan layanan dasar" },
+] as const;
+
+function ScenarioLab({ row }: { row: ForecastRow }) {
+  const [adjustments, setAdjustments] = useState<Record<string, number>>(() => Object.fromEntries(SCENARIO_FACTORS.map((factor) => [factor.code, 0])));
+  const contributions = SCENARIO_FACTORS.map((factor) => {
+    const coefficient = DATA.coefficients.find((item) => item.feature_code === factor.code)?.standardized_coefficient ?? 0;
+    const adjustment = adjustments[factor.code] ?? 0;
+    return { ...factor, coefficient, adjustment, contribution: .5 * coefficient * adjustment };
+  });
+  const scenarioDelta = contributions.reduce((sum, item) => sum + item.contribution, 0);
+  const scenarioValue = Math.max(0, row.forecast_poverty_rate_pct + scenarioDelta);
+  const reset = () => setAdjustments(Object.fromEntries(SCENARIO_FACTORS.map((factor) => [factor.code, 0])));
+  return (
+    <section className="scenario-lab">
+      <div className="scenario-copy">
+        <p className="eyebrow light">Laboratorium skenario</p>
+        <h2>Bagaimana jika kondisi 2025 berbeda?</h2>
+        <p>Geser faktor dalam satuan simpangan baku. Kalkulasi memakai bagian ridge dari ensemble terpilih dan menahan faktor lain tetap. Ini analisis sensitivitas, bukan ramalan kebijakan.</p>
+        <div className="scenario-output">
+          <span><small>Baseline model</small><b>{fmt(row.forecast_poverty_rate_pct)}%</b></span>
+          <i>→</i>
+          <span><small>Hasil skenario</small><b>{fmt(scenarioValue)}%</b></span>
+          <span className={scenarioDelta < 0 ? "scenario-delta improving" : scenarioDelta > 0 ? "scenario-delta worsening" : "scenario-delta"}>{signed(scenarioDelta)} pp</span>
+        </div>
+        <button className="scenario-reset" type="button" onClick={reset}>Reset skenario</button>
+      </div>
+      <div className="scenario-controls">
+        {contributions.map((item) => (
+          <label key={item.code}>
+            <span><b>{item.label}</b><small>{item.hint}</small></span>
+            <output>{item.adjustment > 0 ? "+" : ""}{item.adjustment.toFixed(1)} SD</output>
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.1"
+              value={item.adjustment}
+              aria-label={`Skenario perubahan ${item.label}`}
+              onChange={(event) => setAdjustments((current) => ({ ...current, [item.code]: Number(event.target.value) }))}
+            />
+            <small className="scenario-contribution">Kontribusi model: {signed(item.contribution, 3)} pp</small>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Forecast({ selectedProvince, setSelectedProvince }: { selectedProvince: string; setSelectedProvince: (value: string) => void }) {
   const selected = DATA.forecast.find((row) => row.province === selectedProvince) ?? DATA.forecast[0];
+  const selectedUnavailable = selected.province !== selectedProvince;
   const best = DATA.benchmark[0];
   const averageForecast = DATA.forecast_summary.unweighted_average_forecast_2026_pct;
   const averageChange = DATA.forecast_summary.average_change_pp;
@@ -831,6 +1125,8 @@ function Forecast({ selectedProvince, setSelectedProvince }: { selectedProvince:
         <div><p className="eyebrow light">Eksperimen prediksi · Maret 2026</p><h1>Melihat satu tahun ke depan, dengan ketidakpastian yang terlihat.</h1><p>Forecast memakai informasi 2025 sebagai lag t-1. Nilai ini bukan angka resmi BPS dan tidak boleh menggantikan hasil Susenas.</p></div>
         <div className="forecast-stamp"><span>MODEL TERPILIH</span><b>{best.model_name}</b><small>Rolling-origin 2022–2025</small></div>
       </section>
+
+      {selectedUnavailable && <div className="model-universe-notice"><b>{selectedProvince}</b> belum memiliki seri batas wilayah yang konsisten untuk model 2015–2025. Halaman sementara menampilkan {selected.province}, provinsi pertama dalam semesta model 32.</div>}
 
       <section className="stat-grid forecast-stats">
         <StatCard eyebrow="Rerata forecast 32 provinsi" value={fmt(averageForecast)} unit="%" note={<MiniArrow value={averageChange} />} tone="accent" />
@@ -858,6 +1154,8 @@ function Forecast({ selectedProvince, setSelectedProvince }: { selectedProvince:
           <p className="forecast-caution">Input PDRB 2025 berstatus sangat sementara. Kejutan harga, kebijakan, bencana, dan perubahan survei tidak tertangkap penuh.</p>
         </aside>
       </section>
+
+      <ScenarioLab row={selected} />
 
       <section className="dashboard-grid risk-grid">
         <article className="panel">
@@ -946,6 +1244,12 @@ function Methodology() {
         </div>
       </section>
 
+      <section className="author-card">
+        <div className="author-monogram">MA</div>
+        <div><p className="eyebrow light">Peneliti dan pengembang</p><h2>Muhammad Ali Akbar Al - Qahri</h2><p>Project independen untuk mengeksplorasi kemiskinan Indonesia secara temporal, multivariat, dan spasial dengan sumber utama Badan Pusat Statistik.</p></div>
+        <a href="https://github.com/akbaralqahri/Kemiskinan-Indonesia" target="_blank" rel="noreferrer">Lihat repository <span>↗</span></a>
+      </section>
+
       <section className="sources-section">
         <div><p className="eyebrow">Jejak sumber</p><h2>Publikasi dan geometri</h2></div>
         <div className="source-list">
@@ -962,15 +1266,45 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [year, setYear] = useState(2025);
   const [metric, setMetric] = useState<MetricCode>("poverty_rate_pct");
+  const [mapMode, setMapMode] = useState<MapMode>("level");
   const [selectedProvince, setSelectedProvince] = useState("Nusa Tenggara Timur");
+  const [comparisonProvince, setComparisonProvince] = useState("Jawa Timur");
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [urlReady, setUrlReady] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       setTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+      const params = new URLSearchParams(window.location.search);
+      const requestedTab = params.get("tab") as Tab;
+      const requestedYear = Number(params.get("year"));
+      const requestedMetric = params.get("metric") as MetricCode;
+      const requestedMap = params.get("map") as MapMode;
+      const requestedProvince = params.get("province");
+      const requestedComparison = params.get("compare");
+      if (NAV.some((item) => item.id === requestedTab)) setActiveTab(requestedTab);
+      if (requestedYear >= 2015 && requestedYear <= 2025) setYear(requestedYear);
+      if (Object.hasOwn(METRICS, requestedMetric)) setMetric(requestedMetric);
+      if (MAP_MODES.some((item) => item.code === requestedMap)) setMapMode(requestedMap);
+      if (requestedProvince && ALL_PROVINCES.includes(requestedProvince)) setSelectedProvince(requestedProvince);
+      if (requestedComparison && ALL_PROVINCES.includes(requestedComparison)) setComparisonProvince(requestedComparison);
+      setUrlReady(true);
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (!urlReady) return;
+    const params = new URLSearchParams();
+    params.set("tab", activeTab);
+    params.set("year", String(year));
+    params.set("metric", metric);
+    params.set("map", mapMode);
+    params.set("province", selectedProvince);
+    params.set("compare", comparisonProvince);
+    window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+  }, [activeTab, comparisonProvince, mapMode, metric, selectedProvince, urlReady, year]);
 
   const switchTab = (tab: Tab) => {
     setActiveTab(tab);
@@ -982,6 +1316,16 @@ export default function Home() {
     setTheme(nextTheme);
     document.documentElement.dataset.theme = nextTheme;
     localStorage.setItem("poverty-dashboard-theme", nextTheme);
+  };
+
+  const shareView = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1800);
+    } catch {
+      window.prompt("Salin tautan tampilan ini:", window.location.href);
+    }
   };
 
   return (
@@ -996,6 +1340,9 @@ export default function Home() {
         </nav>
         <div className="header-actions">
           <div className="data-status"><i />Data BPS terharmonisasi</div>
+          <button className="share-button" type="button" onClick={shareView} aria-label="Salin tautan tampilan dashboard" title="Bagikan tampilan">
+            <span aria-hidden="true">↗</span><span>{shareCopied ? "Tersalin" : "Bagikan"}</span>
+          </button>
           <button
             className="theme-toggle"
             type="button"
@@ -1011,7 +1358,8 @@ export default function Home() {
       </header>
 
       <div className="site-shell" id="top">
-        {activeTab === "overview" && <Overview year={year} setYear={setYear} metric={metric} setMetric={setMetric} selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} />}
+        {activeTab === "overview" && <Overview year={year} setYear={setYear} metric={metric} setMetric={setMetric} mapMode={mapMode} setMapMode={setMapMode} selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} />}
+        {activeTab === "profile" && <ProvinceProfile selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} comparisonProvince={comparisonProvince} setComparisonProvince={setComparisonProvince} />}
         {activeTab === "findings" && <Findings />}
         {activeTab === "drivers" && <Drivers year={year} setYear={setYear} selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} />}
         {activeTab === "forecast" && <Forecast selectedProvince={selectedProvince} setSelectedProvince={setSelectedProvince} />}

@@ -4,6 +4,18 @@ Dashboard web interaktif untuk mengeksplorasi kemiskinan Indonesia pada 2015-202
 
 Project ini merupakan subfolder deployment dari repository monorepo `KemiskinanIndo`. Dataset mentah, pipeline, dan laporan berada satu tingkat di atas folder ini.
 
+## Fitur eksplorasi
+
+- empat mode peta: nilai indikator, perubahan P0 2015–2025, risiko forecast 2026, dan kuadran spasial eksploratif;
+- tooltip serta pemilihan provinsi melalui peta dengan dukungan keyboard;
+- profil wilayah dan perbandingan dua provinsi pada enam indikator;
+- pencarian provinsi dengan profil 2025 paling mirip menggunakan jarak indikator terstandar;
+- laboratorium skenario berbasis kontribusi bagian Ridge dari model ensemble;
+- preferensi light/dark dan filter tersimpan dalam URL yang dapat dibagikan;
+- forecast, interval empiris 80%, benchmark, matriks risiko, dan diagnostik error per provinsi.
+
+Parameter URL yang digunakan adalah `tab`, `year`, `metric`, `map`, `province`, dan `compare`. Tombol **Bagikan** menyalin URL dari tampilan aktif sehingga penerima membuka konteks analisis yang sama.
+
 ## Menjalankan secara lokal
 
 Prasyarat: Node.js `>=22.13.0`.

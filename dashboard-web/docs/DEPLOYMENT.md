@@ -132,6 +132,9 @@ Dokumentasi resmi: [Next.js on Cloudflare Workers](https://developers.cloudflare
 - Bagian prediksi menampilkan label **Proyeksi 2026** dan interval ketidakpastian.
 - File `/data/indonesia-adm1-legacy.geojson` dan `/data/indonesia-adm1-current.geojson` mengembalikan status 200.
 - Tab **Temuan**, matriks risiko, dan diagnostik provinsi dapat dibuka.
+- Empat mode peta, tab **Profil wilayah**, dan laboratorium skenario dapat digunakan.
+- Tombol **Bagikan** menghasilkan URL yang memulihkan tab, tahun, indikator, mode peta, dan provinsi.
+- Mode terang dan gelap memiliki kontras yang terbaca.
 - Tautan `/downloads/laporan_analisis_kemiskinan_indonesia_2015_2026.pdf` dan `/downloads/dashboard-data.json` dapat diunduh.
 - Tampilan diuji pada desktop dan ponsel.
 - Judul, description, favicon, dan gambar social preview terbaca.
@@ -152,6 +155,10 @@ Pilih Node.js 22 pada pengaturan platform. Project mensyaratkan `>=22.13.0` pada
 ### Vercel mencoba mengompilasi modul Cloudflare
 
 Gunakan `npm run build:vercel`, bukan `npm run build`. Konfigurasi `tsconfig.json` sudah mengecualikan folder Worker, D1, dan Drizzle dari build Next.js.
+
+### Vercel meminta Python entrypoint
+
+Vercel sedang membangun root repository dan mendeteksi `requirements.txt` milik pipeline analisis. Buka **Settings > Build and Deployment > Root Directory**, pilih `dashboard-web`, simpan, lalu redeploy. Jangan membuat `app.py` dan jangan menghapus `requirements.txt`; keduanya bukan solusi untuk aplikasi web ini.
 
 ### Cloudflare tidak menemukan konfigurasi
 

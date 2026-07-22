@@ -79,7 +79,7 @@ Gunakan `-RefreshMap` hanya ketika ingin mengambil ulang batas 38 provinsi dari 
 - Global Moran's I 2025 sebesar 0,663 (pseudo-p 0,001), menandakan pola kemiskinan mengelompok secara geografis pada definisi KNN-4.
 - Proyeksi 2026 bersifat eksperimental dan bukan angka resmi BPS.
 
-Dashboard kini memuat tab temuan, peta 38 provinsi terkini, penjelasan semesta 38/34/32, matriks risiko forecast, diagnostik error per provinsi, serta unduhan laporan PDF dan data JSON.
+Dashboard kini memuat empat mode peta (nilai, perubahan, risiko 2026, dan kuadran spasial), profil serta perbandingan provinsi, laboratorium skenario terstandar, tab temuan, penjelasan semesta 38/34/32, matriks risiko forecast, diagnostik error per provinsi, URL tampilan yang dapat dibagikan, serta unduhan laporan PDF dan data JSON.
 
 ## Deployment
 
