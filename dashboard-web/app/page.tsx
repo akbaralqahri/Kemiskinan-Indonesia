@@ -356,7 +356,7 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
   const values = rows.map((row) => row[metric]).filter((value): value is number => typeof value === "number");
   const low = Math.min(...values);
   const high = Math.max(...values);
-  const colors = ["#dce5de", "#b9c9bd", "#91aa99", "#c99070", "#b55e3f"];
+  const colors = ["var(--map-1)", "var(--map-2)", "var(--map-3)", "var(--map-4)", "var(--map-5)"];
 
   useEffect(() => {
     const mapSource = year >= 2024
@@ -379,7 +379,7 @@ function IndonesiaMap({ year, metric, selectedProvince, onSelect }: { year: numb
 
   const fillFor = (province: string) => {
     const value = rowByProvince.get(province)?.[metric];
-    if (typeof value !== "number") return "#e8e1d4";
+    if (typeof value !== "number") return "var(--map-missing)";
     const ratio = (value - low) / (high - low || 1);
     return colors[Math.min(colors.length - 1, Math.floor(ratio * colors.length))];
   };
@@ -963,10 +963,25 @@ export default function Home() {
   const [year, setYear] = useState(2025);
   const [metric, setMetric] = useState<MetricCode>("poverty_rate_pct");
   const [selectedProvince, setSelectedProvince] = useState("Nusa Tenggara Timur");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      setTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   const switchTab = (tab: Tab) => {
     setActiveTab(tab);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const toggleTheme = () => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    document.documentElement.dataset.theme = nextTheme;
+    localStorage.setItem("poverty-dashboard-theme", nextTheme);
   };
 
   return (
@@ -979,7 +994,20 @@ export default function Home() {
         <nav aria-label="Navigasi analisis">
           {NAV.map((item) => <button key={item.id} className={activeTab === item.id ? "active" : ""} onClick={() => switchTab(item.id)}><span>{item.label}</span><small>{item.kicker}</small></button>)}
         </nav>
-        <div className="data-status"><i />Data BPS terharmonisasi</div>
+        <div className="header-actions">
+          <div className="data-status"><i />Data BPS terharmonisasi</div>
+          <button
+            className="theme-toggle"
+            type="button"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Aktifkan mode terang" : "Aktifkan mode gelap"}
+            aria-pressed={theme === "dark"}
+            title={theme === "dark" ? "Mode terang" : "Mode gelap"}
+          >
+            <span className="theme-toggle-icon" aria-hidden="true">{theme === "dark" ? "☀" : "◐"}</span>
+            <span>{theme === "dark" ? "Terang" : "Gelap"}</span>
+          </button>
+        </div>
       </header>
 
       <div className="site-shell" id="top">
@@ -992,6 +1020,7 @@ export default function Home() {
 
       <footer>
         <div><span className="brand-mark small">PI</span><p><b>Peta Kemiskinan Indonesia</b><small>Analisis eksploratif berbasis data BPS</small></p></div>
+        <p className="copyright">© 2026 Muhammad Ali Akbar Al - Qahri<br /><span>Hak cipta dilindungi.</span></p>
         <p>Data 2015–2025 · Forecast 2026 nonresmi<br />Diperbarui 22 Juli 2026</p>
       </footer>
     </main>

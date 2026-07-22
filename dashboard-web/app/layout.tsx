@@ -6,6 +6,23 @@ import "./globals.css";
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
+const themeScript = `
+(() => {
+  try {
+    const savedTheme = localStorage.getItem("poverty-dashboard-theme");
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme =
+      savedTheme === "light" || savedTheme === "dark"
+        ? savedTheme
+        : prefersDark
+          ? "dark"
+          : "light";
+  } catch {
+    document.documentElement.dataset.theme = "light";
+  }
+})();
+`;
+
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3001";
@@ -16,11 +33,19 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase: base,
     title: "Peta Kemiskinan Indonesia | Data 2015–2025 & Forecast 2026",
     description: "Dashboard interaktif kemiskinan Indonesia: tren, peringkat provinsi, faktor terkait, benchmark model, dan forecast 2026 berbasis data BPS.",
+    authors: [{ name: "Muhammad Ali Akbar Al - Qahri" }],
+    creator: "Muhammad Ali Akbar Al - Qahri",
+    publisher: "Muhammad Ali Akbar Al - Qahri",
     openGraph: { title: "Peta Kemiskinan Indonesia", description: "Data 2015–2025 · Forecast 2026 eksperimental", images: [{ url: image, width: 1536, height: 1024, alt: "Peta Kemiskinan Indonesia" }] },
     twitter: { card: "summary_large_image", title: "Peta Kemiskinan Indonesia", description: "Data 2015–2025 · Forecast 2026 eksperimental", images: [image] },
   };
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="id"><body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body></html>;
+  return (
+    <html lang="id" suppressHydrationWarning>
+      <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
+      <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
+    </html>
+  );
 }
